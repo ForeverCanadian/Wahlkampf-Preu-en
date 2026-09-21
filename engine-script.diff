@@ -1,0 +1,57 @@
+--- /mnt/user-data/uploads/engine-script.js	2026-09-21 10:45:14.175487000 +0000
++++ /mnt/user-data/outputs/engine-script.js	2026-09-21 10:57:54.401157546 +0000
+@@ -1644,11 +1644,19 @@
+ .cmp-lead h3{ margin:0; font:700 clamp(21px,2.5vw,34px)/1.03 var(--cmp-serif); letter-spacing:-.01em; filter:url(#cmp-ink); }
+ .cmp-lead h4{ margin:3px 0 4px; padding:2px 0; border-top:1px solid var(--ink); border-bottom:1px solid var(--ink); font:italic 700 13.5px/1.25 var(--cmp-serif); }
+ .cmp-lead p, .cmp-col p{ margin:0; font-size:12.5px; line-height:1.32; text-align:justify; hyphens:auto; }
++/* The lead paragraph's length varies week to week (projection sentence or pledge blurb), which used to
++   grow/shrink #cmp-np-body's auto height and, with it, the shared flexible row above (cmp-main) that the
++   map and polling graph fill at width/height:100% — reading as the map/graph "zooming" each week. Clamping
++   this paragraph to a fixed number of lines (and reserving that space even when the text is shorter) keeps
++   #cmp-np-body's height constant regardless of what the week's story actually says. */
++.cmp-lead p{ display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; min-height:calc(12.5px * 1.32 * 3); }
+ .cmp-lead p::first-letter{ float:left; font:400 40px/.78 var(--cmp-fraktur); padding:3px 5px 0 0; color:var(--party-deep); text-shadow:none; }
+ .cmp-col h5{ margin:0 0 4px; padding:0 0 1px; border-bottom:2px solid var(--ink); font:400 18px/1.1 var(--cmp-cond); letter-spacing:.16em; text-transform:uppercase; }
+ .cmp-col h5 small{ font:italic 400 12px/1 var(--cmp-serif); letter-spacing:0; text-transform:none; color:var(--ink-soft); margin-left:4px; }
+ .cmp-tag{ font-style:italic; font-weight:700; }
+-.cmp-chron{ list-style:none; margin:0; padding:0; font-size:12.5px; }
++/* Reserves room for the full 3 entries (cmpFillNews only shows the log once entries exist, growing from 1
++   to 3 over the first few weeks) so the Chronik column's height doesn't grow week to week either. */
++.cmp-chron{ list-style:none; margin:0; padding:0; font-size:12.5px; min-height:calc((12.5px * 1.25 + 2px + 1px) * 3); }
+ .cmp-chron li{ display:flex; gap:6px; align-items:baseline; padding:1px 0; border-bottom:1px dotted var(--ink-mid); line-height:1.25; }
+ .cmp-chron li b{ font:400 15px/1 var(--cmp-cond); letter-spacing:.08em; text-transform:uppercase; flex:0 0 auto; }
+ .cmp-polls{ list-style:none; margin:0; padding:0; display:grid; gap:1px; }
+@@ -2656,8 +2664,11 @@
+   function renderCampaignWeekUpdate(){
+     syncPrussiaMap();     // repaints the existing map/legend/seat-graph nodes in place
+     syncPollingGraph();   // appends this week's tracker poll to the existing polling graph
+-    cmpNudgeResize();     // keep container-sized charts (e.g. the polling graph) matched to the overlay now that nothing else forces a page-wide reflow
+     renderCampaignScreen(); // updates head/you/actions/news/foot in place; the shell itself is untouched
++    // Nudged last, after cmp-news/cmp-you have been refilled: with the news column's height now pinned
++    // (see .cmp-lead p / .cmp-chron above) this should mostly be a no-op, but it still ought to measure the
++    // week's *final* layout rather than the previous week's, in case anything else ever changes cmp-main's size.
++    cmpNudgeResize();
+   }
+ 
+   var PRU_UI_PARTY_ORDER = { 0:'spd', 1:'dnvp', 2:'zentrum', 3:'nlp', 4:'fdp' };
+@@ -2731,7 +2742,19 @@
+       });
+ 
+       data = data.concat(campaignPollRows());   // Phase 2 Step 6: weekly campaign tracker polls (empty outside the campaign)
+-      window.updatePollingData(data);
++      var pollOpts;
++      if(state.game && state.game.phase === 'campaign'){
++        // Reserve the x-axis space for the *whole* 12-week campaign from week 1 onward, instead of
++        // letting updatePollingData() size the axis to only the polls filed so far. Each weekly
++        // tracker poll's quarterIndex (state.history.length + week*pollStep) is a fraction of a
++        // quarter, so with only a handful of quarters on record that one more week could widen the
++        // chart's domain by a visible amount — and since updatePollingData() clears and redraws the
++        // entire plot every time, the whole trend (not just the new point) snapped to the new,
++        // wider scale each week. Pre-committing to the campaign's final width keeps the scale fixed
++        // for its full 12 weeks, so nothing already on the chart moves as new weeks are added.
++        pollOpts = { maxT: state.history.length + CAMPAIGN_WEEKS * CAMPAIGN_TUNING.pollStep + 0.22 };
++      }
++      window.updatePollingData(data, pollOpts);
+       window.pollingGraphData = data;
+     }catch(e){
+       if(window.console && console.warn) console.warn('Polling graph sync failed:', e);

@@ -1,0 +1,26 @@
+--- /mnt/user-data/uploads/elections.html	2026-09-21 10:55:29.693222000 +0000
++++ /mnt/user-data/outputs/elections.html	2026-09-21 10:57:54.404400793 +0000
+@@ -1854,7 +1854,7 @@
+       applyPollSelection(svg);
+     });
+   }
+-  window.updatePollingData=function(newData){
++  window.updatePollingData=function(newData,opts){
+     if(!Array.isArray(newData)||!newData.length)return;
+     POLL_DATA.length=0;
+     newData.forEach(d=>POLL_DATA.push(d));
+@@ -1870,9 +1870,13 @@
+ 
+     // The data contain several observations inside each quarter. Keep the
+     // first and last quarter comfortably inside the plotting area.
++    // opts.maxT lets a caller reserve a fixed x-axis span up front (see the campaign's weekly
++    // tracker polls in engine-script.js: without this, each new weekly poll pushed maxQuarter a
++    // little further out and the *entire* existing plot got redrawn to a new, wider scale every
++    // week — every dot and trend line visibly compressing/"zooming" each time).
+     const maxQuarter=Math.max(1,...POLL_DATA.map(d=>Number(d.quarterIndex ?? d.t ?? 0)));
+     const minT=-0.22;
+-    const maxT=maxQuarter+0.22;
++    const maxT=(opts&&isFinite(opts.maxT))?opts.maxT:maxQuarter+0.22;
+     const x=t=>plot.left+((Number(t)-minT)/(maxT-minT))*plot.width;
+     const y=v=>plot.top+plot.height-(Math.max(0,Number(v)||0)/plot.maxY)*plot.height;
+ 

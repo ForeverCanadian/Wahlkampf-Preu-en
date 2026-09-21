@@ -1,0 +1,79 @@
+--- /mnt/user-data/uploads/sim-script.js	2026-09-21 10:25:03.021795000 +0000
++++ sim-script.js	2026-09-21 10:30:23.412860070 +0000
+@@ -607,8 +607,8 @@
+ 
+ function render(){
+   ensureBase();
+-  const svg=document.getElementById("map");svg.innerHTML="";
+-  renderShadow(svg);
++  const svg=document.getElementById("map");
++  const results=calc();
+   // Pre-compute demo range if needed
+   let demoLo=0, demoHi=100;
+   if((pruState.mapMode||"").startsWith("demo:")){
+@@ -650,10 +650,40 @@
+     const panel=document.getElementById("mapHoverInfo");
+     if(panel)panel.style.display="none";
+   }
+-  const results=calc();
++
++  // Build the static shadow layer and one <path> per constituency only once
++  // (and again if the underlying feature set itself changes size). Every
++  // later call — e.g. redrawing the map after a campaign End Week — reuses
++  // these same nodes and just repaints them, instead of wiping the SVG and
++  // rebuilding every path from scratch on every update, which used to make
++  // the map (and the campaign screen showing it) visibly flash/reload.
++  let districtEls=svg.__districtEls;
++  if(!districtEls || districtEls.length!==results.length){
++    svg.innerHTML="";
++    renderShadow(svg);
++    districtEls=results.map((r,i)=>{
++      const e=document.createElementNS("http://www.w3.org/2000/svg","path"),p=r.feature.properties;
++      e.setAttribute("d",path(r.feature.geometry));e.setAttribute("class","district");
++      e.dataset.i=i;
++      e.setAttribute("tabindex","0");
++      e.setAttribute("role","button");
++      e.setAttribute("aria-label",`${p.map_no}: ${p.display_name}`);
++      e.addEventListener("click",()=>toggleSelect(i));
++      e.addEventListener("keydown",evt=>{
++        if(evt.key==="Enter"||evt.key===" "||evt.key==="Spacebar"){evt.preventDefault();toggleSelect(i);}
++      });
++      e.addEventListener("focus",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
++      e.addEventListener("blur",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
++      e.addEventListener("mouseenter",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
++      e.addEventListener("mouseleave",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
++      svg.appendChild(e);
++      return e;
++    });
++    svg.__districtEls=districtEls;
++  }
++
+   results.forEach((r,i)=>{
+-    const e=document.createElementNS("http://www.w3.org/2000/svg","path"),p=r.feature.properties;
+-    e.setAttribute("d",path(r.feature.geometry));e.setAttribute("class","district");
++    const e=districtEls[i];
+     const w=r.winner;
+     const mode=pruState.mapMode||"winner";
+     let fill;
+@@ -673,20 +703,8 @@
+       fill=shadeColor((pruState.parties[w]||pruState.parties[0]).color, shadeLevel(r.shares[r.winner]));
+     }
+     e.setAttribute("fill",fill);
+-    e.dataset.i=i;
+-    e.setAttribute("tabindex","0");
+-    e.setAttribute("role","button");
+-    e.setAttribute("aria-label",`${p.map_no}: ${p.display_name}`);
+-    e.addEventListener("click",()=>toggleSelect(i));
+-    e.addEventListener("keydown",evt=>{
+-      if(evt.key==="Enter"||evt.key===" "||evt.key==="Spacebar"){evt.preventDefault();toggleSelect(i);}
+-    });
+-    e.addEventListener("focus",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
+-    e.addEventListener("blur",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
+-    e.addEventListener("mouseenter",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
+-    e.addEventListener("mouseleave",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
+-    svg.appendChild(e);
+   });
++
+   legend();stats();renderElectionGraph();renderSeatGraph();
+   if(typeof renderFlowControls==="function")renderFlowControls();
+   if(typeof renderFlowGraphs==="function")renderFlowGraphs();

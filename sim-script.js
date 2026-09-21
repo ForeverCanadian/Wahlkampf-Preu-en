@@ -171,7 +171,7 @@ function calc(){
     const p=feature.properties||{};
     const raw=pruState.parties.map((_,j)=>{
       const src=sourceOrder[j] ?? j;
-      let value=Math.max(0,(Number(b[src])||0)+(Number(pruState.swings[j])||0));
+      let value=Math.max(0,(Number(b[src])||0)+(Number(pruState.swings[j])||0)+(Number(pruState.localSwings&&pruState.localSwings[i]&&pruState.localSwings[i][j])||0));   // localSwings: optional per-constituency campaign effects (null/absent = no effect)
 
       const row=pruState.demoValues[i]||[];
       const industry=demoValue(row,"occ_industry_pct");
@@ -607,8 +607,8 @@ function renderShadow(svg){
 
 function render(){
   ensureBase();
-  const svg=document.getElementById("map");svg.innerHTML="";
-  renderShadow(svg);
+  const svg=document.getElementById("map");
+  const results=calc();
   // Pre-compute demo range if needed
   let demoLo=0, demoHi=100;
   if((pruState.mapMode||"").startsWith("demo:")){
@@ -650,10 +650,40 @@ function render(){
     const panel=document.getElementById("mapHoverInfo");
     if(panel)panel.style.display="none";
   }
-  const results=calc();
+
+  // Build the static shadow layer and one <path> per constituency only once
+  // (and again if the underlying feature set itself changes size). Every
+  // later call — e.g. redrawing the map after a campaign End Week — reuses
+  // these same nodes and just repaints them, instead of wiping the SVG and
+  // rebuilding every path from scratch on every update, which used to make
+  // the map (and the campaign screen showing it) visibly flash/reload.
+  let districtEls=svg.__districtEls;
+  if(!districtEls || districtEls.length!==results.length){
+    svg.innerHTML="";
+    renderShadow(svg);
+    districtEls=results.map((r,i)=>{
+      const e=document.createElementNS("http://www.w3.org/2000/svg","path"),p=r.feature.properties;
+      e.setAttribute("d",path(r.feature.geometry));e.setAttribute("class","district");
+      e.dataset.i=i;
+      e.setAttribute("tabindex","0");
+      e.setAttribute("role","button");
+      e.setAttribute("aria-label",`${p.map_no}: ${p.display_name}`);
+      e.addEventListener("click",()=>toggleSelect(i));
+      e.addEventListener("keydown",evt=>{
+        if(evt.key==="Enter"||evt.key===" "||evt.key==="Spacebar"){evt.preventDefault();toggleSelect(i);}
+      });
+      e.addEventListener("focus",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
+      e.addEventListener("blur",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
+      e.addEventListener("mouseenter",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
+      e.addEventListener("mouseleave",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
+      svg.appendChild(e);
+      return e;
+    });
+    svg.__districtEls=districtEls;
+  }
+
   results.forEach((r,i)=>{
-    const e=document.createElementNS("http://www.w3.org/2000/svg","path"),p=r.feature.properties;
-    e.setAttribute("d",path(r.feature.geometry));e.setAttribute("class","district");
+    const e=districtEls[i];
     const w=r.winner;
     const mode=pruState.mapMode||"winner";
     let fill;
@@ -673,20 +703,8 @@ function render(){
       fill=shadeColor((pruState.parties[w]||pruState.parties[0]).color, shadeLevel(r.shares[r.winner]));
     }
     e.setAttribute("fill",fill);
-    e.dataset.i=i;
-    e.setAttribute("tabindex","0");
-    e.setAttribute("role","button");
-    e.setAttribute("aria-label",`${p.map_no}: ${p.display_name}`);
-    e.addEventListener("click",()=>toggleSelect(i));
-    e.addEventListener("keydown",evt=>{
-      if(evt.key==="Enter"||evt.key===" "||evt.key==="Spacebar"){evt.preventDefault();toggleSelect(i);}
-    });
-    e.addEventListener("focus",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
-    e.addEventListener("blur",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
-    e.addEventListener("mouseenter",()=>{showHoverInfo(i);e.classList.add("dist-hover");});
-    e.addEventListener("mouseleave",()=>{hideHoverInfo();e.classList.remove("dist-hover");});
-    svg.appendChild(e);
   });
+
   legend();stats();renderElectionGraph();renderSeatGraph();
   if(typeof renderFlowControls==="function")renderFlowControls();
   if(typeof renderFlowGraphs==="function")renderFlowGraphs();
@@ -877,13 +895,32 @@ window.pruRenderPartyControls=renderPartyControls;
 // National vote share (%) per party that the election simulator would give for a set of national
 // swings, without touching what is on screen. The polling chart uses this so that it shows exactly
 // the same party percentages as the election-result and voter-flow charts.
-window.pruNationalForSwings=function(swings){
-  const saved=pruState.swings.slice();
+window.pruNationalForSwings=function(swings,local){
+  const saved=pruState.swings.slice(), savedLocal=pruState.localSwings;
   try{
     for(let i=0;i<pruState.parties.length;i++)pruState.swings[i]=Number(swings[i])||0;
+    pruState.localSwings=local||null;   // callers that pass nothing (e.g. the historical polling series) never see campaign effects
     return electionSummary().national.slice();
   }finally{
     for(let i=0;i<saved.length;i++)pruState.swings[i]=saved[i];
+    pruState.localSwings=savedLocal;
+  }
+};
+// Full projected result (national shares, constituency winners/shares, seats) for a set of national swings
+// and optional per-constituency local swings, without touching what is on screen. Used by the campaign.
+window.pruProjectionForSwings=function(swings,local){
+  const saved=pruState.swings.slice(), savedLocal=pruState.localSwings;
+  try{
+    for(let i=0;i<pruState.parties.length;i++)pruState.swings[i]=Number(swings[i])||0;
+    pruState.localSwings=local||null;
+    const e=electionSummary();
+    return {
+      national:e.national.slice(), constSeats:e.constSeats.slice(), total:e.total.slice(), totalSeats:e.totalSeats,
+      results:e.r.map(x=>({winner:x.winner,shares:x.shares.slice()}))
+    };
+  }finally{
+    for(let i=0;i<saved.length;i++)pruState.swings[i]=saved[i];
+    pruState.localSwings=savedLocal;
   }
 };
 window.pruParseCSV=parseCSV;

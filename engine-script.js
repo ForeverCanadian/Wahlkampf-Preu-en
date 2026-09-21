@@ -399,9 +399,124 @@
     return g;
   }
 
+  /* ===== Political game state (Phase 2, Step 1) =====
+     This is the foundation for the campaign/pledge/coalition systems planned
+     for later Phase 2 steps. Nothing in this step reads or writes s.game yet
+     outside of defaulting/normalizing it — it is inert scaffolding. It lives
+     as a property of the same `state` object as the economic engine's
+     history/draft, so it is automatically covered by the existing
+     persist()/buildFullDocument()/localStorage pipeline with no changes to
+     any of that plumbing.
+     Party keys mirror defaultGovernment()'s (zentrum/spd/dnvp/nlp/fdp, from
+     PARTIES above) so this can eventually line up with state.draft.government
+     without a translation layer.
+     Phase 2, Step 2 adds 'party-selection' as the first phase (see the
+     party-selection screen further down) — a new game now starts there
+     instead of 'governing', and only moves to 'governing' once the player
+     picks a party.
+     Phase 2, Step 3 inserts 'pledge-selection' right after
+     'party-selection' — a new game now goes party-selection ->
+     pledge-selection -> governing, only reaching 'governing' once both a
+     party and a pledge are chosen. See PLEDGES / the pledge-selection
+     screen further down.
+     Phase 2, Step 4 wires up the 'campaign' phase already named in
+     GAME_PHASES since Step 1 (nothing previously transitioned into it): a
+     "Begin Campaign" toolbar button on the governing-phase Control Center
+     moves phase governing -> campaign and seeds campaignWeek/campaignFunds/
+     campaign (see beginCampaign() and the campaign screen further down);
+     week 12's action moves campaign -> election. */
+  var GAME_PHASES = ['party-selection', 'pledge-selection', 'governing', 'campaign', 'election', 'coalition-formation'];
+
+  /* ===== Pledge definitions (Phase 2, Step 3) =====
+     A small, fixed menu of pledges the player can choose from — one per
+     game, chosen once at the start (no campaign/re-pledging logic yet).
+     Each definition is intentionally minimal: just what's needed to show
+     the pledge-selection screen and seed state.game.pledge. `relatedMetric`
+     names one of the existing METRICS keys the pledge is thematically about
+     (e.g. so a later step can judge fulfillment against it) but nothing
+     reads that field yet — it's documentation for the next step, not wired
+     to anything. `startingPopularity` seeds the runtime pledge object's
+     `popularity`; nothing updates it yet either. */
+  var PLEDGES = [
+    { key:'stabilize-currency', name:'Stabilize the Currency',
+      description:'Keep prices steady and defend the Rentenmark against renewed inflation.',
+      relatedMetric:'inflationRate', startingPopularity:50 },
+    { key:'cut-unemployment', name:'Reduce Unemployment',
+      description:'Put idle hands back to work, especially in heavy industry and the trades.',
+      relatedMetric:'unemploymentRate', startingPopularity:50 },
+    { key:'balance-budget', name:'Balance the Budget',
+      description:'Bring Reich spending back in line with revenue and halt the growth of public debt.',
+      relatedMetric:'debtToGdp', startingPopularity:50 },
+    { key:'raise-wages', name:'Raise Real Wages',
+      description:'Push wages up faster than the cost of living for working families.',
+      relatedMetric:'realMedianWage', startingPopularity:50 },
+    { key:'expand-welfare', name:'Expand Social Insurance',
+      description:'Widen unemployment, health and old-age insurance to cover more of the population.',
+      relatedMetric:'povertyRate', startingPopularity:50 }
+  ];
+
+  /* Builds the runtime state.game.pledge object from a PLEDGES definition.
+     This is the "proper structure" Step 3 asks for: enough fields for a
+     later step to add bills/policies, move popularity, and resolve
+     fulfillment, without any of those step 4+ behaviors existing yet.
+     name/description are copied at selection time (rather than looked up
+     from PLEDGES by key every time) so the chosen pledge keeps its text
+     even if PLEDGES is edited or reordered later. */
+  function makePledgeState(def){
+    return {
+      key: def.key,
+      name: def.name,
+      description: def.description,
+      status: 'active',        // 'active' | 'fulfilled' | 'broken' — no transitions wired yet
+      popularity: def.startingPopularity, // 0-100 scale, matching METRICS-style numbers used elsewhere; nothing moves it yet
+      bills: [],                // placeholder for linked bills/policies (Phase 2, Step 4+)
+      fulfillment: null         // shape TBD — placeholder for the fulfillment system (Phase 2, Step 4+)
+    };
+  }
+
+  /* ===== Campaign skeleton (Phase 2, Step 4) =====
+     A minimal 12-week campaign loop: each week the player picks one
+     placeholder action (logged, no mechanical effect yet — no polling
+     movement, no funds raised or spent, no AI opponent behavior). Week 12's
+     action is the one that ends the campaign and moves to 'election'.
+     CAMPAIGN_ACTIONS is a small fixed menu, same pattern as PARTIES/
+     PLEDGES above. STARTING_CAMPAIGN_FUNDS just seeds a number for the
+     campaign screen to display — nothing here raises, spends, or otherwise
+     touches it; that's explicitly a later step. */
+  var CAMPAIGN_ACTIONS = [
+    { key:'canvass', name:'Canvass the District', description:'Go door to door making the case directly to voters.' },
+    { key:'speech', name:'Give a Public Speech', description:'Address a hall of supporters and undecided voters alike.' },
+    { key:'press', name:'Court the Press', description:'Sit for interviews and place statements with sympathetic papers.' },
+    { key:'organize', name:'Organize Local Committees', description:'Build out the party\u2019s local volunteer network.' }
+  ];
+  var STARTING_CAMPAIGN_FUNDS = 500; // bn RM equivalent placeholder — display only, not mechanically meaningful yet
+  var CAMPAIGN_WEEKS = 12;
+
+  function defaultGameState(){
+    return {
+      year: 1924,
+      quarter: 'Q1 1924',       // mirrors the economic engine's quarter label format
+      phase: GAME_PHASES[0],    // 'party-selection' | 'pledge-selection' | 'governing' | 'campaign' | 'election' | 'coalition-formation'
+      playerParty: null,        // party key from PARTIES (e.g. 'spd'), null until chosen
+      pledge: null,              // makePledgeState() result once chosen (see PLEDGES above), null until then
+      campaignWeek: 0,          // 1-12 while phase==='campaign' (see beginCampaign()), 0 otherwise
+      campaignFunds: 0,         // seeded to STARTING_CAMPAIGN_FUNDS when the campaign begins; nothing raises or spends it yet
+      campaign: null,           // { actions: [] } once the campaign begins — one logged entry per completed week, see CAMPAIGN_ACTIONS
+      election: {
+        lastHeld: null,         // quarter label of the most recently held election, e.g. 'Q1 1924'
+        results: null           // { parties: [{ key, votes, seats }], totalSeats } once an election runs
+      },
+      government: {
+        coalition: [],          // array of party keys currently in government
+        status: defaultGovernment() // party key -> 'opposition' | 'support' | 'government'
+      }
+    };
+  }
+
   var BASELINE = {
     updatedAt: 0,
     currentPage: 1,
+    game: null, // filled in below, after BASELINE.history/draft exist (defaultGameState() only needs PARTIES/defaultGovernment(), both already defined above)
     history: [
       {
         quarter:'Q1 1924',
@@ -430,6 +545,7 @@
   BASELINE.draft.metrics = clone(BASELINE.history[0].metrics);
   BASELINE.draft.sectors = clone(BASELINE.history[0].sectors);
   BASELINE.draft.government = clone(BASELINE.history[0].government);
+  BASELINE.game = defaultGameState();
 
   function clone(o){ return JSON.parse(JSON.stringify(o)); }
 
@@ -507,6 +623,40 @@
     s.history.forEach(function(h){
       if(!h.government) h.government = defaultGovernment();
     });
+    // Backfills s.game for any state saved (localStorage) or embedded
+    // (state-data) before Phase 2 Step 1 introduced it.
+    if(!s.game) s.game = defaultGameState();
+    if(!s.game.election) s.game.election = { lastHeld: null, results: null };
+    if(!s.game.government) s.game.government = { coalition: [], status: defaultGovernment() };
+    if(!s.game.government.status) s.game.government.status = defaultGovernment();
+    // Phase 2 Step 4: backfills the campaign fields for any state saved
+    // before this step introduced them (all Step 1-3 saves — campaignWeek
+    // already existed as inert scaffolding since Step 1, but campaignFunds/
+    // campaign did not). No phase-gating needed here the way party/pledge
+    // selection are gated: phase could never have been 'campaign' before
+    // this step existed, since nothing set it, so there's no save to
+    // recover mid-campaign — only the fields themselves need defaulting.
+    if(s.game.campaignWeek == null) s.game.campaignWeek = 0;
+    if(s.game.campaignFunds == null) s.game.campaignFunds = 0;
+    if(s.game.campaign === undefined) s.game.campaign = null;
+    // Phase 2 Step 2: any state saved before 'party-selection' existed (or
+    // that otherwise has no playerParty yet) is put back into the
+    // party-selection phase, so the start screen still gates play — a
+    // Step 1 save had phase:'governing' by default even though no party had
+    // been chosen.
+    // Phase 2 Step 3: once a party is chosen but no pledge has been (a
+    // Step-2-era save made before pledge-selection existed, or a fresh game
+    // mid-way through the new two-screen start flow), gate on
+    // 'pledge-selection' the same way. These two checks are deliberately
+    // exclusive (a state can't be missing playerParty AND need only the
+    // pledge gate) so there's no ordering ambiguity between them.
+    if(!s.game.playerParty){
+      if(s.game.phase !== 'party-selection') s.game.phase = 'party-selection';
+    } else if(!s.game.pledge){
+      if(s.game.phase !== 'party-selection' && s.game.phase !== 'pledge-selection'){
+        s.game.phase = 'pledge-selection';
+      }
+    }
   }
 
   /* ===== Autonomous quarterly simulation =====
@@ -1072,6 +1222,1453 @@
     renderPage1();
     syncPrussiaMap();
     syncPollingGraph();
+    renderPartySelectOverlay();
+    renderPledgeSelectOverlay();
+    renderCampaignScreen();
+  }
+
+  /* ===== Party selection (Phase 2, Step 2) =====
+     A game start screen shown whenever state.game.phase is 'party-selection'
+     (a fresh game, or an older save normalized back into that phase — see
+     normalizeState()). It is a single overlay appended to <body> and
+     styled entirely with inline styles here, rather than anything added to
+     elections.html's own <style id="engine-style"> block, so this feature
+     stays contained to this file the same way Phase 2 Step 1 did. It is
+     rebuilt by render() like everything else, and disappears on its own
+     once state.game.phase moves past 'party-selection' — no other page or
+     the nav bar underneath it needed any change.
+     Uses its own escGame() rather than sim-script.js's esc(): the two files
+     load as independent <script> tags, and sim-script.js can fail before
+     defining esc() (e.g. if its constituency data files are missing) without
+     stopping engine-script.js — this screen should not go down with it. */
+  function escGame(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(m){
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m];
+    });
+  }
+
+  function renderPartySelectOverlay(){
+    var el = document.getElementById('party-select-overlay');
+    var show = state.game && state.game.phase === 'party-selection';
+    if(!show){
+      if(el) el.parentNode.removeChild(el);
+      return;
+    }
+    if(!el){
+      el = document.createElement('div');
+      el.id = 'party-select-overlay';
+      document.body.appendChild(el);
+    }
+    el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(18,14,10,0.92);'+
+      'display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;';
+    var html = '<div style="background:#fbf6ea;max-width:520px;width:100%;padding:32px 36px;'+
+      'border:1px solid #c9bfa5;box-shadow:0 12px 40px rgba(0,0,0,0.4);font-family:Georgia,\'EB Garamond\',serif;">';
+    html += '<h2 style="margin:0 0 10px;font-size:23px;color:#202122;">Choose Your Party</h2>';
+    html += '<p style="margin:0 0 22px;color:#4a4a4a;line-height:1.5;font-size:15px;">'+
+      'Select the party you will lead, beginning ' + escGame(state.game.quarter) + '. This choice cannot be changed once the game begins.</p>';
+    html += '<div id="party-select-list" style="display:flex;flex-direction:column;gap:10px;">';
+    PARTIES.forEach(function(p){
+      html += '<button type="button" class="party-select-btn" data-party="' + escGame(p.key) + '" style="'+
+        'display:flex;align-items:center;gap:12px;padding:12px 16px;border:1px solid #ccc2a8;'+
+        'background:#fff;cursor:pointer;text-align:left;font-size:15px;font-family:inherit;color:#202122;">'+
+        '<span style="width:15px;height:15px;border-radius:50%;background:' + escGame(p.color) + ';display:inline-block;flex:0 0 auto;border:1px solid rgba(0,0,0,0.15);"></span>'+
+        '<span>' + escGame(p.name) + '</span>'+
+      '</button>';
+    });
+    html += '</div></div>';
+    el.innerHTML = html;
+    var buttons = el.querySelectorAll('.party-select-btn');
+    for(var i=0;i<buttons.length;i++){
+      buttons[i].addEventListener('click', onPartySelectClick);
+    }
+  }
+
+  function onPartySelectClick(e){
+    onPartySelect(e.currentTarget.getAttribute('data-party'));
+  }
+
+  function onPartySelect(key){
+    if(!state.game || state.game.phase !== 'party-selection') return;
+    var known = PARTIES.some(function(p){ return p.key === key; });
+    if(!known) return;
+    state.game.playerParty = key;
+    var idx = GAME_PHASES.indexOf('party-selection');
+    state.game.phase = GAME_PHASES[idx+1] || 'governing';
+    state.updatedAt = Date.now();
+    render();
+    schedulePersist();
+  }
+
+  /* ===== Pledge selection (Phase 2, Step 3) =====
+     Shown whenever state.game.phase is 'pledge-selection' — normally right
+     after party selection, or an older save normalized back here (see
+     normalizeState()). Same pattern as the party-selection overlay just
+     above it: a single <body>-level overlay, inline-styled, rebuilt by
+     render(), gone once the phase moves past 'pledge-selection'. Reuses
+     escGame() rather than duplicating it. */
+  function renderPledgeSelectOverlay(){
+    var el = document.getElementById('pledge-select-overlay');
+    var show = state.game && state.game.phase === 'pledge-selection';
+    if(!show){
+      if(el) el.parentNode.removeChild(el);
+      return;
+    }
+    if(!el){
+      el = document.createElement('div');
+      el.id = 'pledge-select-overlay';
+      document.body.appendChild(el);
+    }
+    el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(18,14,10,0.92);'+
+      'display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;';
+    var partyName = '';
+    if(state.game.playerParty){
+      var p = PARTIES.filter(function(pp){ return pp.key === state.game.playerParty; })[0];
+      if(p) partyName = p.name;
+    }
+    var html = '<div style="background:#fbf6ea;max-width:560px;width:100%;padding:32px 36px;'+
+      'border:1px solid #c9bfa5;box-shadow:0 12px 40px rgba(0,0,0,0.4);font-family:Georgia,\'EB Garamond\',serif;">';
+    html += '<h2 style="margin:0 0 10px;font-size:23px;color:#202122;">Choose Your Pledge</h2>';
+    html += '<p style="margin:0 0 22px;color:#4a4a4a;line-height:1.5;font-size:15px;">'+
+      'As leader of the ' + escGame(partyName || 'party') + ', choose the single pledge you will campaign and govern on, beginning ' +
+      escGame(state.game.quarter) + '. This choice cannot be changed once the game begins.</p>';
+    html += '<div id="pledge-select-list" style="display:flex;flex-direction:column;gap:10px;">';
+    PLEDGES.forEach(function(pl){
+      html += '<button type="button" class="pledge-select-btn" data-pledge="' + escGame(pl.key) + '" style="'+
+        'display:block;padding:12px 16px;border:1px solid #ccc2a8;'+
+        'background:#fff;cursor:pointer;text-align:left;font-family:inherit;color:#202122;">'+
+        '<span style="display:block;font-size:15px;font-weight:bold;margin-bottom:3px;">' + escGame(pl.name) + '</span>'+
+        '<span style="display:block;font-size:13px;color:#5a5a5a;line-height:1.4;">' + escGame(pl.description) + '</span>'+
+      '</button>';
+    });
+    html += '</div></div>';
+    el.innerHTML = html;
+    var buttons = el.querySelectorAll('.pledge-select-btn');
+    for(var i=0;i<buttons.length;i++){
+      buttons[i].addEventListener('click', onPledgeSelectClick);
+    }
+  }
+
+  function onPledgeSelectClick(e){
+    onPledgeSelect(e.currentTarget.getAttribute('data-pledge'));
+  }
+
+  function onPledgeSelect(key){
+    if(!state.game || state.game.phase !== 'pledge-selection') return;
+    var def = PLEDGES.filter(function(p){ return p.key === key; })[0];
+    if(!def) return;
+    state.game.pledge = makePledgeState(def);
+    var idx = GAME_PHASES.indexOf('pledge-selection');
+    state.game.phase = GAME_PHASES[idx+1] || 'governing';
+    state.updatedAt = Date.now();
+    render();
+    schedulePersist();
+  }
+
+  /* ===== Campaign phase (Phase 2, Step 4) =====
+     beginCampaign() is the sole entry point into the 'campaign' phase (from
+     the "Begin Campaign" button shown on the governing-phase Control
+     Center — see buildAppHtml()/attachHandlers()). renderCampaignScreen()
+     is the weekly screen, same <body>-overlay pattern as the party/pledge
+     screens: shown only while phase==='campaign', rebuilt by render(),
+     removed once the phase moves past 'campaign'. onCampaignAction() logs
+     the picked action for the current week (no mechanical effect — see the
+     comment on CAMPAIGN_ACTIONS above) and advances campaignWeek; advancing
+     past CAMPAIGN_WEEKS (12) ends the campaign and moves to 'election'. */
+  function beginCampaign(){
+    if(!state.game || state.game.phase !== 'governing') return;
+    state.game.phase = 'campaign';
+    state.game.campaignWeek = 1;
+    state.game.campaignFunds = STARTING_CAMPAIGN_FUNDS;
+    state.game.campaign = { actions: [] };
+    state.updatedAt = Date.now();
+    render();
+    schedulePersist();
+  }
+
+  /* ===== Campaign UI (Phase 2, Step 5) — full-screen campaign headquarters =====
+     UI ONLY. Nothing in this block changes campaign mechanics: beginCampaign()
+     and onCampaignAction() are untouched, the 12-week loop, the
+     CAMPAIGN_ACTIONS menu, campaignFunds and the action log behave exactly as
+     before. The only interaction difference is presentational: an action
+     placard *stages* the week's action, and the End Week button then calls the
+     existing onCampaignAction() with it (exactly one action is still logged
+     per week, and week 12 still hands off to 'election').
+
+     Visual language: a Weimar-era political newspaper page — black ink on
+     off-white newsprint, thick-thin rules, ornamental chain borders, Fraktur
+     nameplate, condensed grotesque rubrics, engraved/woodcut icons, halftone
+     and grain. The party colour is a second "spot ink" (rules, seals, stamps,
+     misregistered numerals), never a UI fill.
+
+     Reuse, not rewrite: the existing Prussian election map (.map-panel, #map)
+     and the existing polling graph (.polling-graph-panel) are MOVED into the
+     campaign screen while phase==='campaign' and put back in their original
+     spot on page 5 afterwards. Moving the same nodes keeps every id, event
+     listener and the syncPrussiaMap()/syncPollingGraph() plumbing working
+     as-is — updatePollingData() still finds '.polling-graph-panel > svg'.
+
+     The screen is a persistent shell (built once) with dynamic regions that are
+     refilled on every render(); the two adopted panels live in slots that are
+     never re-rendered. Every class here is prefixed cmp- so it cannot collide
+     with the global rules in elections.html (bare svg / button / .panel /
+     .hint / .title ...). */
+
+  var CMP = {
+    selected: null,       // action key staged for the current week (UI only — nothing is logged until End Week)
+    selectedWeek: 0,      // week the staged action belongs to
+    renderedWeek: 0,      // last week the shell rendered (drives the one-off "off the press" reveal)
+    committing: false,    // guards the short stamp animation before End Week commits
+    home: null            // [{node,parent,next}] where the adopted map/polling panels normally live
+  };
+
+  var CMP_ABBR = { zentrum:'Z', spd:'SPD', dnvp:'DNVP', nlp:'NLP', fdp:'FDP' };
+
+  // Period advertising copy for the four placards (presentation only).
+  var CMP_SLOGAN = { canvass:'Von Haus zu Haus!', speech:'Auf zur Versammlung!', press:'Das Wort in die Presse!', organize:'Ortsgruppen gr\u00fcnden!' };
+
+  var CMP_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=League+Gothic&family=UnifrakturCook:wght@700&family=Old+Standard+TT:ital,wght@0,400;0,700;1,400&display=swap');
+
+html.cmp-lock, html.cmp-lock body{ overflow:hidden !important; }
+
+.cmp-root{
+  --np:#e9e3d0; --np-hi:#f3eee1; --np-lo:#d6cdb2;
+  --ink:#16120d; --ink-soft:#4a4235; --ink-mid:#7d735f;
+  --cmp-cond:'League Gothic','Oswald','Arial Narrow','Impact',sans-serif;
+  --cmp-serif:'Old Standard TT','Vollkorn',Georgia,'Times New Roman',serif;
+  --cmp-fraktur:'UnifrakturMaguntia','UnifrakturCook','Old English Text MT',Georgia,serif;
+  /* fine newsprint grain + coarse mottling */
+  --cmp-grain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .18  0 0 0 0 .14  0 0 0 0 .07  0 0 0 .62 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>");
+  --cmp-mottle:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='420' height='420'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='.011' numOctaves='3' seed='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .34  0 0 0 0 .14  0 0 0 .55 -.12'/></filter><rect width='100%' height='100%' filter='url(%23m)'/></svg>");
+  /* ornamental chain (Zierleiste) */
+  --cmp-chain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='10' viewBox='0 0 22 10'><path d='M0 5h5M17 5h5' stroke='%2316120d' stroke-width='1'/><path d='M11 .8l4.2 4.2-4.2 4.2-4.2-4.2z' fill='%2316120d'/><circle cx='5.6' cy='5' r='1' fill='%2316120d'/><circle cx='16.4' cy='5' r='1' fill='%2316120d'/></svg>");
+  --cmp-dots:radial-gradient(circle at 50% 50%, var(--ink) 0 1.05px, transparent 1.45px);
+
+  position:fixed; inset:0; z-index:9999;
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto auto auto; gap:9px;
+  padding:16px 22px 14px; overflow:auto;
+  color:var(--ink); font-family:var(--cmp-serif); font-size:14px; line-height:1.35;
+  text-shadow:0 0 .5px rgba(22,18,13,.55);          /* ink spread */
+  background-color:var(--np);
+  background-image:var(--cmp-grain), var(--cmp-mottle), radial-gradient(140% 110% at 50% 45%, transparent 58%, rgba(96,72,28,.26) 100%);
+  box-shadow:inset 0 0 0 5px var(--np), inset 0 0 0 8px var(--ink), inset 0 0 0 10px var(--np), inset 0 0 0 11px var(--ink);
+}
+.cmp-root *{ box-sizing:border-box; }
+/* elections.html styles bare button / button:hover (rounded, white on hover) for the simulator UI; keep the placards rigid and on-paper */
+.cmp-root button{ font-family:inherit; border-radius:0; text-shadow:inherit; }
+.cmp-root :focus-visible{ outline:3px solid var(--ink); outline-offset:3px; box-shadow:0 0 0 6px var(--party); }
+.cmp-inked{ filter:url(#cmp-ink); }
+
+.cmp-rule{ height:7px; border-top:3px solid var(--ink); border-bottom:1px solid var(--ink); }
+.cmp-chain{ height:10px; background:var(--cmp-chain) repeat-x center; }
+
+/* ---------- header: campaign-office letterhead ---------- */
+.cmp-head{
+  position:relative; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:18px;
+  padding:5px 2px 12px; border-top:1px solid var(--ink);
+}
+.cmp-head::after{ content:""; position:absolute; left:0; right:0; bottom:0; height:7px; border-top:3px solid var(--ink); border-bottom:2px solid var(--party); }
+.cmp-party{ display:flex; align-items:center; gap:11px; min-width:0; }
+.cmp-seal{
+  flex:0 0 auto; width:42px; height:42px; border-radius:50%; display:grid; place-items:center;
+  border:2px solid var(--party-deep); color:var(--party-deep); background:var(--np-hi);
+  box-shadow:0 0 0 2px var(--np-hi), 0 0 0 3px var(--party-deep); font:400 17px/1 var(--cmp-cond); letter-spacing:.04em;
+}
+.cmp-party-name{ font:400 31px/1 var(--cmp-cond); text-transform:uppercase; letter-spacing:.07em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cmp-title{ text-align:center; margin:0; }
+.cmp-title-main{ display:inline-flex; align-items:center; gap:14px; font:400 clamp(26px,3vw,42px)/1 var(--cmp-cond); text-transform:uppercase; letter-spacing:.17em; white-space:nowrap; }
+.cmp-title-main::before, .cmp-title-main::after{ content:""; width:clamp(40px,7vw,110px); height:10px; background:var(--cmp-chain) repeat-x center; }
+.cmp-title-sub{ display:block; margin-top:2px; font:italic 400 12.5px/1.2 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-week{
+  justify-self:end; display:flex; align-items:baseline; gap:9px; padding:1px 14px 0;
+  border:1px solid var(--ink); box-shadow:0 0 0 3px var(--np), 0 0 0 4px var(--ink); background:var(--np-hi);
+}
+.cmp-week-word{ font:italic 400 14px/1 var(--cmp-serif); }
+.cmp-week-num{ font:400 42px/1 var(--cmp-cond); letter-spacing:.03em; display:inline-block; text-shadow:2px 1px 0 var(--party); }   /* second ink, slightly off register */
+.cmp-week-of{ font:400 18px/1 var(--cmp-cond); letter-spacing:.08em; color:var(--ink-soft); }
+
+/* ---------- main row ---------- */
+.cmp-main{ display:grid; grid-template-columns:minmax(0,1.12fr) minmax(0,1fr); gap:20px; min-height:0; padding:4px 4px 0; }
+.cmp-side{ display:grid; grid-template-rows:minmax(0,1fr) auto; gap:20px; min-height:0; min-width:0; }
+
+/* boxed, printed-in illustrations */
+.cmp-sheet{
+  position:relative; min-width:0; min-height:0; display:flex; flex-direction:column;
+  background-color:var(--np-hi); background-image:var(--cmp-grain);
+  border:3px solid var(--ink); box-shadow:0 0 0 3px var(--np), 0 0 0 4px var(--ink);
+}
+.cmp-rubric{
+  flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:1px 12px 0; background:var(--ink); color:var(--np-hi); text-shadow:none;
+  font:400 19px/1.3 var(--cmp-cond); letter-spacing:.2em; text-transform:uppercase;
+}
+.cmp-rubric > span:first-child::before{ content:""; display:inline-block; width:8px; height:8px; margin:0 9px 1px 0; background:var(--party-lit); transform:rotate(45deg); }
+.cmp-map-slot > .map-panel, .cmp-poll-slot > .polling-graph-panel{ margin:0; }
+.cmp-empty{ margin:auto; padding:18px; text-align:center; font:italic 400 14px/1.4 var(--cmp-serif); color:var(--ink-soft); }
+
+/* adopted existing panels: keep their behaviour, retire their web-app skin */
+.cmp-root .panel{ background:transparent; border:0; border-radius:0; box-shadow:none; }
+.cmp-map-slot .map-panel{
+  padding:8px 14px 8px; flex:1; min-height:0; display:grid; gap:2px 12px;
+  grid-template-columns:auto minmax(0,1fr); grid-template-rows:auto auto minmax(0,1fr);
+  grid-template-areas:"head head" "shade mode" "map map";
+}
+.cmp-map-slot .map-head{ grid-area:head; margin:0; align-items:baseline; }
+.cmp-map-slot .shade-key{ grid-area:shade; margin:0; align-self:center; }
+.cmp-map-slot .map-mode-bar{ grid-area:mode; margin:0; }
+.cmp-map-slot .map-wrap{ grid-area:map; margin:4px 0 0; min-height:0; overflow:hidden; }
+.cmp-map-slot #map{ width:100%; height:100%; }
+.cmp-root .hl{ color:var(--ink); font-size:19px; }
+.cmp-root .legend{ gap:4px 14px; font-size:12px; }
+.cmp-root .hint, .cmp-root .shade-key, .cmp-root .map-mode-bar label, .cmp-root .choro-legend{ color:var(--ink-soft); }
+.cmp-root .map-mode-bar select{
+  background:var(--np-hi); color:var(--ink); border:1px solid var(--ink); border-radius:0;
+  font:400 13px var(--cmp-serif); padding:2px 6px; min-width:160px;
+}
+.cmp-root .map-hover-info{ background:var(--np-hi); border:2px solid var(--ink); border-radius:0; box-shadow:0 0 0 2px var(--np-hi), 0 0 0 3px var(--ink); }
+.cmp-root .swatch.unowned{ border-color:var(--ink-mid); }
+
+.cmp-poll-slot .polling-graph-panel{ padding:6px 12px 8px !important; flex:1; min-height:0; display:flex; }
+.cmp-poll-slot .polling-graph-panel > svg{ width:100%; height:100%; mix-blend-mode:multiply; }   /* the chart's white ground prints as newsprint */
+.cmp-zoom-btn{
+  cursor:pointer; background:var(--np-hi); color:var(--ink); border:1px solid var(--np-hi); padding:0 9px;
+  font:400 15px/1.35 var(--cmp-cond); letter-spacing:.14em; text-transform:uppercase; text-shadow:none;
+}
+.cmp-root .cmp-zoom-btn{ background-color:var(--np-hi); }
+.cmp-root .cmp-zoom-btn:hover{ background-color:var(--party-lit); color:var(--ink); }
+.cmp-poll-slot.cmp-zoom{ position:fixed; left:4vw; right:4vw; top:5vh; bottom:5vh; z-index:10; box-shadow:0 0 0 100vmax rgba(14,11,7,.78), 0 0 0 3px var(--np), 0 0 0 4px var(--ink); }
+.cmp-poll-slot.cmp-zoom .polling-graph-panel{ padding:16px 22px 18px !important; }
+
+.cmp-map-slot::after, .cmp-you::after{
+  content:""; position:absolute; pointer-events:none; opacity:.3; background:var(--cmp-dots) 0 0 / 5px 5px;
+}
+.cmp-map-slot::after{ left:0; bottom:0; width:38%; height:34%; -webkit-mask-image:radial-gradient(circle at 0 100%, #000, transparent 70%); mask-image:radial-gradient(circle at 0 100%, #000, transparent 70%); }
+.cmp-you::after{ right:0; bottom:0; width:34%; height:60%; -webkit-mask-image:radial-gradient(circle at 100% 100%, #000, transparent 70%); mask-image:radial-gradient(circle at 100% 100%, #000, transparent 70%); }
+
+/* ---------- your campaign: printed notice ---------- */
+.cmp-you{ display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:6px 22px; align-content:start; padding:0 16px 10px; overflow:hidden; }
+.cmp-you-head{ grid-column:1 / -1; margin:0 -16px 5px; }
+.cmp-you-head .cmp-rubric-title{ margin:0; font:inherit; letter-spacing:inherit; text-transform:inherit; }
+.cmp-stamp{
+  display:inline-block; padding:0 8px; border:2px solid var(--np-hi); color:var(--np-hi);
+  font:400 14px/1.35 var(--cmp-cond); letter-spacing:.2em; text-transform:uppercase; transform:rotate(-3deg);
+}
+.cmp-pledge-name{ margin:0 0 2px; font:700 21px/1.1 var(--cmp-serif); }
+.cmp-pledge-desc{ margin:0; font:italic 400 13px/1.28 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-you-stats{ display:grid; gap:6px; align-content:start; }
+.cmp-meter-row{ display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:9px; font-size:13px; }
+.cmp-meter{ position:relative; height:12px; border:1px solid var(--ink);
+  background-image:repeating-linear-gradient(90deg, transparent 0 9.4%, var(--ink) 9.4% 10%); }
+.cmp-meter > i{ position:absolute; left:0; top:0; bottom:0; background:var(--party); box-shadow:inset 0 0 0 1px var(--party-deep); }
+.cmp-meter-val{ font:400 20px/1 var(--cmp-cond); letter-spacing:.05em; }
+.cmp-poll-line{ margin:0; font-size:13px; line-height:1.3; }
+.cmp-poll-line b{ font:400 21px/1 var(--cmp-cond); letter-spacing:.04em; color:var(--party-deep); text-shadow:none; }
+.cmp-cal{ grid-column:1 / -1; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); margin-top:5px; border:1px solid var(--ink); }
+.cmp-cal-cell{
+  --ic-fill:var(--ink); --ic-cut:var(--np-hi);
+  position:relative; height:27px; display:grid; place-items:center; background:var(--np-hi);
+  font:400 16px/1 var(--cmp-cond); letter-spacing:.04em; color:var(--ink-soft);
+}
+.cmp-cal-cell + .cmp-cal-cell{ border-left:1px solid var(--ink); }
+.cmp-cal-cell.is-done{ --ic-fill:var(--np-hi); --ic-cut:var(--ink); background:var(--ink); color:var(--np-hi); }
+.cmp-cal-cell.is-now{ background:var(--party); color:var(--party-ink); box-shadow:inset 0 0 0 2px var(--np-hi), inset 0 0 0 3px var(--ink); }
+.cmp-cal-cell svg.cmp-ico{ width:19px; height:19px; }
+
+/* ---------- action placards (Anschlag / newspaper advertisements) ---------- */
+.cmp-actions{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:22px; padding:6px 4px 3px; }
+.cmp-act{
+  --ic-fill:var(--ink); --ic-cut:var(--np-hi);
+  position:relative; display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:13px; text-align:left;
+  padding:9px 14px 9px 11px; cursor:pointer; color:var(--ink); border:3px solid var(--ink); min-height:84px;
+  background-color:var(--np-hi); background-image:var(--cmp-grain);
+  box-shadow:inset 0 0 0 3px var(--np-hi), inset 0 0 0 4px var(--ink), 0 0 0 3px var(--np), 0 0 0 4px var(--ink);
+  transition:transform .12s ease;
+}
+/* corner ornaments differ per advertisement, like separate ads on a page */
+.cmp-act::before{ content:""; position:absolute; left:8px; right:8px; top:6px; height:5px; background:var(--cmp-chain) repeat-x center / 22px 5px; opacity:.85; pointer-events:none; }
+.cmp-act--speech::before{ background:var(--cmp-dots) repeat-x center / 6px 5px; }
+.cmp-act--press::before{ background:repeating-linear-gradient(-45deg, var(--ink) 0 1px, transparent 1px 4px); height:4px; }
+.cmp-act--organize::before{ background:repeating-linear-gradient(90deg, var(--ink) 0 5px, transparent 5px 10px); height:2px; top:8px; }
+.cmp-root .cmp-act:hover{ background-color:var(--np-lo); transform:translateY(-2px); }
+.cmp-act-medal{
+  position:relative; width:60px; height:60px; border-radius:50%; display:grid; place-items:center; margin-top:5px;
+  border:2px solid var(--ink); box-shadow:0 0 0 2px var(--np-hi), 0 0 0 3px var(--party-deep);
+  background-image:var(--cmp-dots); background-size:4px 4px; background-color:var(--np-hi);
+}
+.cmp-act svg.cmp-ico{ width:44px; height:44px; }
+.cmp-act-slogan{ display:block; margin-top:5px; font:italic 400 12.5px/1.1 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-act-name{ display:block; font:400 31px/.98 var(--cmp-cond); text-transform:uppercase; letter-spacing:.045em; filter:url(#cmp-ink); }
+.cmp-act-desc{ display:block; margin-top:3px; padding-top:3px; border-top:1px solid var(--ink); font:400 12px/1.25 var(--cmp-serif); color:var(--ink-soft); }
+/* staged action: the placard prints in reverse (white on black ink) with a spot-colour tab */
+.cmp-act[aria-pressed="true"], .cmp-root .cmp-act[aria-pressed="true"]:hover{
+  --ic-fill:var(--np-hi); --ic-cut:var(--ink); color:var(--np-hi); background-color:var(--ink); transform:translateY(-3px);
+  box-shadow:inset 0 0 0 3px var(--ink), inset 0 0 0 4px var(--np-hi), 0 0 0 3px var(--np), 0 0 0 4px var(--ink);
+}
+.cmp-act[aria-pressed="true"]::before{ filter:invert(1); }
+.cmp-act[aria-pressed="true"] .cmp-act-slogan, .cmp-act[aria-pressed="true"] .cmp-act-desc{ color:var(--np-lo); border-color:var(--np-lo); }
+.cmp-act[aria-pressed="true"] .cmp-act-medal{ border-color:var(--np-hi); background-color:var(--ink); background-image:radial-gradient(circle at 50% 50%, rgba(243,238,225,.4) 0 1px, transparent 1.4px); box-shadow:0 0 0 2px var(--ink), 0 0 0 3px var(--party-lit); }
+.cmp-act[aria-pressed="true"]::after{
+  content:"This week"; position:absolute; right:12px; top:-13px; padding:0 11px 0 12px; z-index:2;
+  background:var(--party); color:var(--party-ink); font:400 17px/1.4 var(--cmp-cond); letter-spacing:.14em; text-transform:uppercase; text-shadow:none;
+  border:2px solid var(--ink); transform:rotate(2deg);
+}
+.cmp-ico .f{ fill:var(--ic-fill,currentColor); }
+.cmp-ico .c{ stroke:var(--ic-cut,#f3eee1); fill:none; }
+.cmp-ico .o{ stroke:var(--ic-fill,currentColor); fill:none; }
+
+/* ---------- the newspaper ---------- */
+.cmp-news{ padding:5px 16px 8px; border-width:4px; box-shadow:0 0 0 3px var(--np), 0 0 0 5px var(--ink); }
+.cmp-news-inner{ display:flex; flex-direction:column; min-width:0; }
+.cmp-np-head{ display:grid; grid-template-columns:minmax(150px,1fr) auto minmax(150px,1fr); align-items:center; gap:14px; padding:2px 0 0; }
+.cmp-np-title{ font:400 clamp(38px,7.2vh,68px)/1 var(--cmp-fraktur); text-align:center; white-space:nowrap; letter-spacing:.01em; padding:0 6px; }
+.cmp-np-ear{ justify-self:start; display:flex; align-items:center; gap:10px; padding:3px 12px 3px 9px; border:1px solid var(--ink); box-shadow:0 0 0 2px var(--np-hi), 0 0 0 3px var(--ink); min-height:46px; }
+.cmp-np-ear.r{ justify-self:end; justify-content:flex-end; text-align:right; padding:3px 9px 3px 12px; }
+.cmp-np-ear b{ display:block; font:400 21px/1 var(--cmp-cond); letter-spacing:.1em; text-transform:uppercase; }
+.cmp-np-ear i{ display:block; font:italic 400 12px/1.15 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-vig{ position:relative; flex:0 0 auto; width:46px; height:40px; display:grid; place-items:center; }
+.cmp-vig::before{ content:""; position:absolute; inset:0; border-radius:50%; background:var(--cmp-dots) 0 0 / 4px 4px; opacity:.5; -webkit-mask-image:radial-gradient(circle, #000 30%, transparent 72%); mask-image:radial-gradient(circle, #000 30%, transparent 72%); }
+.cmp-vig svg{ position:relative; width:42px; height:38px; color:var(--ink); }
+.cmp-np-dateline{
+  display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:14px; margin:3px 0 6px; padding:1px 0;
+  border-top:3px solid var(--ink); border-bottom:1px solid var(--ink);
+  font:italic 400 12px/1.5 var(--cmp-serif);
+}
+.cmp-np-dateline > :last-child{ text-align:right; }
+.cmp-np-dateline .cmp-chain{ width:120px; height:8px; background-size:22px 8px; }
+.cmp-np-dateline b{ font:400 15px/1 var(--cmp-cond); font-style:normal; letter-spacing:.1em; text-transform:uppercase; }
+.cmp-np-body{ display:grid; grid-template-columns:minmax(0,2.35fr) minmax(0,1.15fr) minmax(0,1.1fr) minmax(0,1.2fr); align-items:stretch; }
+.cmp-np-body > *{ padding:0 14px; min-width:0; }
+.cmp-np-body > * + *{ border-left:1px solid var(--ink); }
+.cmp-np-body > :first-child{ padding-left:0; }
+.cmp-np-body > :last-child{ padding-right:0; }
+.cmp-lead h3{ margin:0; font:700 clamp(21px,2.5vw,34px)/1.03 var(--cmp-serif); letter-spacing:-.01em; filter:url(#cmp-ink); }
+.cmp-lead h4{ margin:3px 0 4px; padding:2px 0; border-top:1px solid var(--ink); border-bottom:1px solid var(--ink); font:italic 700 13.5px/1.25 var(--cmp-serif); }
+.cmp-lead p, .cmp-col p{ margin:0; font-size:12.5px; line-height:1.32; text-align:justify; hyphens:auto; }
+/* The lead paragraph's length varies week to week (projection sentence or pledge blurb), which used to
+   grow/shrink #cmp-np-body's auto height and, with it, the shared flexible row above (cmp-main) that the
+   map and polling graph fill at width/height:100% — reading as the map/graph "zooming" each week. Clamping
+   this paragraph to a fixed number of lines (and reserving that space even when the text is shorter) keeps
+   #cmp-np-body's height constant regardless of what the week's story actually says. */
+.cmp-lead p{ display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; min-height:calc(12.5px * 1.32 * 3); }
+.cmp-lead p::first-letter{ float:left; font:400 40px/.78 var(--cmp-fraktur); padding:3px 5px 0 0; color:var(--party-deep); text-shadow:none; }
+.cmp-col h5{ margin:0 0 4px; padding:0 0 1px; border-bottom:2px solid var(--ink); font:400 18px/1.1 var(--cmp-cond); letter-spacing:.16em; text-transform:uppercase; }
+.cmp-col h5 small{ font:italic 400 12px/1 var(--cmp-serif); letter-spacing:0; text-transform:none; color:var(--ink-soft); margin-left:4px; }
+.cmp-tag{ font-style:italic; font-weight:700; }
+/* Reserves room for the full 3 entries (cmpFillNews only shows the log once entries exist, growing from 1
+   to 3 over the first few weeks) so the Chronik column's height doesn't grow week to week either. */
+.cmp-chron{ list-style:none; margin:0; padding:0; font-size:12.5px; min-height:calc((12.5px * 1.25 + 2px + 1px) * 3); }
+.cmp-chron li{ display:flex; gap:6px; align-items:baseline; padding:1px 0; border-bottom:1px dotted var(--ink-mid); line-height:1.25; }
+.cmp-chron li b{ font:400 15px/1 var(--cmp-cond); letter-spacing:.08em; text-transform:uppercase; flex:0 0 auto; }
+.cmp-polls{ list-style:none; margin:0; padding:0; display:grid; gap:1px; }
+.cmp-polls li{ display:grid; grid-template-columns:38px minmax(0,1fr) auto; align-items:center; gap:6px; font-size:12px; line-height:1.15; }
+.cmp-polls .cmp-bar{ height:8px; border:1px solid var(--ink); }
+.cmp-polls .cmp-bar i{ display:block; height:100%; background:var(--c); }
+.cmp-polls li.is-you{ font-weight:700; }
+.cmp-polls li.is-you .cmp-bar{ box-shadow:0 0 0 1px var(--np-hi), 0 0 0 2px var(--ink); }
+.cmp-polls .cmp-abbr{ font:400 16px/1 var(--cmp-cond); letter-spacing:.06em; }
+.cmp-polls .cmp-pct{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; min-width:42px; }
+.cmp-polls .cmp-pct small{ display:inline-block; min-width:30px; margin-left:5px; font:italic 400 10.5px/1 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-fx-line{ font-size:12px; color:var(--ink-soft); }
+.cmp-fx-line b{ font:400 15px/1 var(--cmp-cond); letter-spacing:.05em; color:var(--ink); text-shadow:none; }
+.cmp-print{ animation:cmp-print .75s steps(16,end) both; }
+@keyframes cmp-print{ from{ clip-path:inset(0 0 100% 0); } to{ clip-path:inset(0 0 0 0); } }
+
+/* ---------- footer: treasury + End Week ---------- */
+.cmp-foot{ position:relative; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:20px; padding:12px 6px 4px; }
+.cmp-foot::before{ content:""; position:absolute; left:0; right:0; top:0; height:7px; border-top:1px solid var(--ink); border-bottom:3px solid var(--ink); }
+.cmp-funds{ display:flex; align-items:baseline; gap:12px; }
+.cmp-funds-label{ font:italic 400 14px/1 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-funds-num{ font:400 40px/1 var(--cmp-cond); letter-spacing:.04em; font-variant-numeric:tabular-nums; text-shadow:2px 1px 0 var(--party); }
+.cmp-funds-num .cmp-rm{ font-size:.55em; margin-left:7px; letter-spacing:.14em; text-shadow:none; color:var(--ink-soft); }
+.cmp-foot-note{ text-align:center; font:italic 400 14px/1.3 var(--cmp-serif); color:var(--ink-soft); }
+.cmp-foot-note b{ font-style:normal; font-weight:700; color:var(--ink); }
+.cmp-end{
+  position:relative; cursor:pointer; padding:5px 26px 9px 24px; border:3px solid var(--ink);
+  background-color:var(--ink); background-image:var(--cmp-grain); color:var(--np-hi); text-shadow:none;
+  font:400 32px/1 var(--cmp-cond); letter-spacing:.13em; text-transform:uppercase; white-space:nowrap;
+  box-shadow:inset 0 0 0 2px var(--ink), inset 0 0 0 3px var(--np-hi), 0 0 0 3px var(--np), 0 0 0 4px var(--ink);
+  transition:transform .09s ease;
+}
+.cmp-end::after{ content:""; position:absolute; left:8px; right:8px; bottom:6px; height:3px; background:var(--party-lit); }
+.cmp-root .cmp-end, .cmp-root .cmp-end:hover{ background-color:var(--ink); }
+.cmp-end:hover:not(:disabled){ transform:translateY(-2px); }
+.cmp-end:disabled, .cmp-root .cmp-end:disabled:hover{ cursor:not-allowed; background-color:transparent; background-image:none; color:var(--ink-soft); border:3px dashed var(--ink-soft); box-shadow:none; }
+.cmp-end:disabled::after{ display:none; }
+.cmp-end.cmp-stamping{ transform:translateY(5px) scale(.985); box-shadow:inset 0 0 0 2px var(--ink), inset 0 0 0 3px var(--np-hi), 0 0 0 3px var(--np), 0 0 0 4px var(--ink); }
+
+/* ---------- smaller screens ---------- */
+@media (max-height:1000px) and (min-width:901px){
+  .cmp-root{ gap:7px; padding:12px 20px 10px; }
+  .cmp-head{ padding:3px 2px 10px; }
+  .cmp-seal{ width:36px; height:36px; font-size:15px; }
+  .cmp-party-name{ font-size:26px; }
+  .cmp-title-main{ font-size:clamp(24px,2.7vw,34px); }
+  .cmp-title-sub{ font-size:12px; margin-top:0; }
+  .cmp-week{ padding:0 12px; }
+  .cmp-week-num{ font-size:34px; }
+  .cmp-main{ gap:16px; padding-top:2px; }
+  .cmp-side{ gap:16px; }
+  .cmp-actions{ gap:18px; padding-top:4px; }
+  .cmp-act{ min-height:70px; padding:8px 12px 8px 10px; gap:11px; }
+  .cmp-act-medal{ width:50px; height:50px; margin-top:4px; }
+  .cmp-act svg.cmp-ico{ width:37px; height:37px; }
+  .cmp-act-slogan{ display:none; }
+  .cmp-act-name{ font-size:26px; }
+  .cmp-act-desc{ font-size:11.5px; line-height:1.2; margin-top:2px; }
+  .cmp-news{ padding:4px 16px 6px; }
+  .cmp-np-title{ font-size:clamp(34px,5.3vh,58px); }
+  .cmp-np-ear{ min-height:0; padding:2px 8px; }
+  .cmp-np-ear b{ font-size:19px; }
+  .cmp-vig{ width:38px; height:32px; }
+  .cmp-vig svg{ width:34px; height:30px; }
+  .cmp-np-dateline{ margin:2px 0 5px; }
+  .cmp-lead h3{ font-size:clamp(20px,3.1vh,30px); }
+  .cmp-lead h4{ margin:3px 0 0; }
+  .cmp-lead p{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; margin-top:3px; }
+  .cmp-col h5{ font-size:17px; margin-bottom:3px; }
+  .cmp-polls li{ font-size:11.5px; line-height:1.05; }
+  .cmp-polls .cmp-abbr{ font-size:14px; }
+  .cmp-polls .cmp-bar{ height:7px; }
+  .cmp-foot{ padding-top:10px; }
+  .cmp-funds-num{ font-size:34px; }
+  .cmp-end{ font-size:27px; padding:4px 22px 8px 20px; }
+  .cmp-you{ gap:4px 20px; padding-bottom:8px; }
+  .cmp-pledge-name{ font-size:19px; }
+  .cmp-pledge-desc{ font-size:12.5px; }
+  .cmp-cal-cell{ height:24px; }
+  .cmp-cal-cell svg.cmp-ico{ width:17px; height:17px; }
+}
+@media (max-height:800px) and (min-width:901px){
+  .cmp-root{ gap:6px; padding:10px 18px 8px; }
+  .cmp-title-sub{ display:none; }
+  .cmp-head{ padding-bottom:8px; }
+  .cmp-rubric{ font-size:17px; line-height:1.25; }
+  .cmp-act{ min-height:54px; }
+  .cmp-act-desc{ display:none; }
+  .cmp-act-name{ font-size:25px; }
+  .cmp-act-medal{ width:44px; height:44px; margin-top:3px; }
+  .cmp-act svg.cmp-ico{ width:33px; height:33px; }
+  .cmp-np-title{ font-size:clamp(28px,4.9vh,42px); }
+  .cmp-np-ear{ display:none; }
+  .cmp-np-head{ grid-template-columns:1fr; }
+  .cmp-np-dateline{ display:none; }
+  .cmp-lead h3{ font-size:clamp(18px,2.9vh,24px); }
+  .cmp-lead h4{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+  .cmp-lead p{ display:none; }
+  .cmp-pledge-desc{ display:none; }
+  .cmp-you-stats{ grid-column:2; }
+  .cmp-foot{ padding-top:8px; }
+  .cmp-funds-num{ font-size:30px; }
+  .cmp-end{ font-size:24px; padding:3px 20px 7px 18px; }
+  .cmp-main{ min-height:380px; }
+}
+@media (max-width:1180px){
+  .cmp-actions{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .cmp-np-body{ grid-template-columns:minmax(0,1fr) minmax(0,1fr); row-gap:12px; }
+  .cmp-np-body > *{ border-left:0 !important; padding:0 8px; }
+}
+@media (max-width:900px){
+  .cmp-root{ display:flex; flex-direction:column; gap:14px; padding:14px 16px 12px; }
+  .cmp-root > *{ flex:0 0 auto; }
+  .cmp-head{ grid-template-columns:1fr auto; }
+  .cmp-title{ grid-column:1 / -1; grid-row:2; }
+  .cmp-title-main::before, .cmp-title-main::after{ display:none; }
+  .cmp-main{ display:flex; flex-direction:column; gap:20px; min-height:0; }
+  .cmp-map-slot{ height:min(118vw,620px); }
+  .cmp-map-slot .map-panel{ grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto auto minmax(0,1fr); grid-template-areas:"head" "shade" "mode" "map"; }
+  .cmp-root .map-mode-bar select{ min-width:0; max-width:100%; }
+  .cmp-side{ display:flex; flex-direction:column; gap:20px; }
+  .cmp-poll-slot{ height:min(70vw,460px); }
+  .cmp-you{ grid-template-columns:1fr; }
+  .cmp-actions{ grid-template-columns:1fr; }
+  .cmp-np-head{ grid-template-columns:1fr; }
+  .cmp-np-title{ font-size:9.4vw; white-space:normal; line-height:1.05; }
+  .cmp-np-ear{ display:none; }
+  .cmp-np-body{ grid-template-columns:1fr; }
+  .cmp-np-body > *{ padding:0 !important; }
+  .cmp-np-dateline{ grid-template-columns:1fr; text-align:center; }
+  .cmp-np-dateline > :last-child{ text-align:center; }
+  .cmp-np-dateline .cmp-chain{ display:none; }
+  .cmp-foot{ grid-template-columns:1fr; text-align:center; gap:8px; }
+  .cmp-funds{ justify-content:center; }
+  .cmp-end{ width:100%; }
+  .cmp-party-name{ font-size:24px; }
+}
+@media (prefers-reduced-motion:reduce){
+  .cmp-root *, .cmp-root *::before, .cmp-root *::after{ animation:none !important; transition:none !important; }
+}
+`;
+
+  function cmpEnsureStyles(){
+    if(document.getElementById('campaign-ui-style')) return;
+    var st = document.createElement('style');
+    st.id = 'campaign-ui-style';
+    st.textContent = CMP_CSS;
+    document.head.appendChild(st);
+  }
+
+  /* ---- small helpers ---- */
+  function cmpPartyDef(key){
+    return PARTIES.filter(function(p){ return p.key === key; })[0] || PARTIES[0];
+  }
+  // The map, the polling graph and the party legend all draw with pruState's party colours
+  // (editable in the simulator), so the campaign's spot ink reads from there when available.
+  function cmpPartyColor(def){
+    var color = def.color;
+    try{
+      var pp = window.pruState && window.pruState.parties;
+      Object.keys(PRU_UI_PARTY_ORDER).forEach(function(i){
+        if(PRU_UI_PARTY_ORDER[i] === def.key && pp && pp[i] && /^#[0-9a-f]{6}$/i.test(pp[i].color||'')) color = pp[i].color;
+      });
+    }catch(e){}
+    return color;
+  }
+  function cmpRgb(hex){
+    var n = parseInt(String(hex).replace('#',''), 16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+  function cmpLum(hex){
+    var c = cmpRgb(hex);
+    return (0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2]) / 255;
+  }
+  function cmpInkFor(hex){ return cmpLum(hex) > 0.56 ? '#16120d' : '#f3eee1'; }
+  function cmpHex(c){
+    return '#' + c.map(function(v){ v = Math.max(0, Math.min(255, Math.round(v))); return (v<16?'0':'') + v.toString(16); }).join('');
+  }
+  function cmpDeepen(hex, k){   // toward black: party colour as legible ink on newsprint
+    return cmpHex(cmpRgb(hex).map(function(v){ return v*(1-k); }));
+  }
+  function cmpLift(hex, k){     // toward white: party colour as legible ink on black (very dark parties only)
+    return cmpLum(hex) < 0.3 ? cmpHex(cmpRgb(hex).map(function(v){ return v + (255-v)*k; })) : hex;
+  }
+  function cmpElectionLabel(){
+    var q = state.draft && state.draft.quarter, m = /(\d{4})/.exec(q || '');
+    var year = m ? m[1] : (state.game && state.game.year) || '';
+    return 'Reichstagswahl ' + year;
+  }
+  function cmpPad2(n){ return (n < 10 ? '0' : '') + n; }
+  function cmpActionDef(key){
+    return CAMPAIGN_ACTIONS.filter(function(a){ return a.key === key; })[0];
+  }
+
+  // Latest polling for the campaign screen. During the campaign this is the stored weekly tracker
+  // (state.game.campaign.polls / .baseline, the same numbers the polling graph draws around) with the change
+  // since the previous poll; otherwise the latest quarter's polling averaged from the graph data.
+  function cmpLatestPolls(){
+    var c = state.game && state.game.phase === 'campaign' && state.game.campaign;
+    if(c && c.baseline && c.baseline.national){
+      var lastP = c.polls && c.polls.length ? c.polls[c.polls.length-1] : { week:0, shares:c.baseline.national };
+      var prevS = c.polls && c.polls.length ? (c.polls.length > 1 ? c.polls[c.polls.length-2].shares : c.baseline.national) : null;
+      var rowsC = PARTIES.map(function(p){
+        var v = Number(lastP.shares[p.key]) || 0;
+        return { key:p.key, name:p.name, abbr:CMP_ABBR[p.key] || p.key.toUpperCase(), color:cmpPartyColor(p), share:v,
+                 delta: prevS ? v - (Number(prevS[p.key]) || 0) : null };
+      });
+      rowsC.sort(function(a,b){ return b.share - a.share; });
+      return { quarter: lastP.week === 0 ? state.draft.quarter : 'week ' + lastP.week, rows:rowsC };
+    }
+    var data = window.pollingGraphData;
+    if(!data || !data.length) return null;
+    var last = data[data.length-1];
+    var field = last.quarterIndex != null ? 'quarterIndex' : 'quarter';
+    var rows = data.filter(function(d){ return d[field] === last[field]; });
+    if(!rows.length) return null;
+    var out = PARTIES.map(function(p){
+      var sum = 0, n = 0;
+      rows.forEach(function(r){ if(isFinite(Number(r[p.name]))){ sum += Number(r[p.name]); n++; } });
+      return { key:p.key, name:p.name, abbr:CMP_ABBR[p.key] || p.key.toUpperCase(), color:cmpPartyColor(p), share:n ? sum/n : 0, delta:null };
+    });
+    out.sort(function(a,b){ return b.share - a.share; });
+    return { quarter:last.quarter, rows:out };
+  }
+
+  function cmpSigned(v, d){ return (v >= 0 ? '+' : '\u2212') + fmtNum(Math.abs(v), d); }
+
+  // Woodcut-style icons: solid ink silhouettes with white-line cuts (.f = solid, .c = cut lines, .o = outline).
+  function cmpIcon(key){
+    var s = '<svg class="cmp-ico" viewBox="0 0 48 48" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">';
+    if(key === 'canvass'){          // an arched door with panels, knocker and step
+      s += '<path class="f" d="M11 43V20a13 13 0 0 1 26 0v23z"/>' +
+           '<path class="c" d="M16 43V21a8 8 0 0 1 16 0v22M24 13v30M16 27h16M16 34h16"/>' +
+           '<circle class="f" cx="28.5" cy="30" r="0"/><path class="c" d="M27 30.5h3"/>' +
+           '<path class="o" d="M6 43h36M8 46h32"/>';
+    } else if(key === 'speech'){    // a megaphone with sound rays
+      s += '<path class="f" d="M6 20l24-11v30L6 28z"/>' +
+           '<path class="c" d="M11 21.5l14-6M11 24l14-1M11 26.5l14 4"/>' +
+           '<path class="f" d="M12 29l3 12h6l-2.5-11z"/>' +
+           '<path class="o" d="M34 17c3.5 3 3.5 11 0 14M39 12c5.5 5 5.5 19 0 24M44 8c7 7 7 25 0 32"/>';
+    } else if(key === 'press'){     // a newspaper with masthead block and columns
+      s += '<path class="f" d="M7 9h30v31H11a4 4 0 0 1-4-4z"/>' +
+           '<path class="c" d="M11 14h22M11 19h22"/>' +
+           '<path class="c" d="M11 24h10M11 28h10M11 32h10M11 36h10M25 24h8M25 28h8M25 32h8"/>' +
+           '<path class="o" d="M37 15h4v21a4 4 0 0 1-4 4"/>';
+    } else {                        // organize: a banner on a pole
+      s += '<path class="f" d="M13 5h3v39h-3z"/><path class="f" d="M16 8h25l-6 8 6 8H16z"/>' +
+           '<path class="c" d="M21 12h14M21 16h10M21 20h14"/>' +
+           '<path class="o" d="M7 44h15M9 47h11"/>';
+    }
+    return s + '</svg>';
+  }
+
+  // Engraved ballot box for the newspaper's left ear.
+  function cmpVignette(){
+    return '<svg viewBox="0 0 64 56" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      '<path d="M9 26h46v26H9z" fill="currentColor" fill-opacity=".14"/>' +
+      '<path d="M9 26l6-9h34l6 9"/><path d="M25 21h14" stroke-width="3.2"/>' +
+      '<path d="M13 30v19M16.5 30v19M20 30v19M23.5 30v19M27 30v19" stroke-width="1"/>' +
+      '<path d="M35 5l11 2.4-3.4 14.6-11-2.4z" fill="#f3eee1"/><path d="M36 9.5l7.6 1.6M35 13.6l7.6 1.6" stroke-width="1"/>' +
+      '<path d="M5 52h54" stroke-width="2"/></svg>';
+  }
+
+  /* ---- bulletin copy: everything comes from real state (actions logged, draft metrics, polls, funds) ---- */
+  var CMP_STORIES = {
+    canvass:  { head:'{P} canvassers work the district door to door', deck:'Volunteers spent the week putting the case for \u201c{L}\u201d to voters at their own doors.' },
+    speech:   { head:'{P} leader takes the platform', deck:'This week\u2019s speech carried the case for \u201c{L}\u201d to supporters and undecided voters alike.' },
+    press:    { head:'{P} places its case in the papers', deck:'Interviews and statements on \u201c{L}\u201d ran in sympathetic newspapers this week.' },
+    organize: { head:'{P} builds out its local committees', deck:'New volunteer committees took shape in the districts behind \u201c{L}\u201d.' }
+  };
+
+  function cmpFill(tpl, party, pledge){
+    return tpl.replace('{P}', party).replace('{L}', pledge);
+  }
+
+  var CMP_ECON = {
+    unemploymentRate: { phrase:'unemployment',            unit:'% of the workforce' },
+    inflationRate:    { phrase:'inflation, year on year', unit:'%' },
+    povertyRate:      { phrase:'the poverty rate',        unit:'%' },
+    realMedianWage:   { phrase:'the real median wage',    unit:'RM a month' },
+    debtToGdp:        { phrase:'public debt',             unit:'% of GDP' },
+    gdpIndex:         { phrase:'real GDP',                unit:'on the 1924 = 100 index' }
+  };
+
+  function cmpEconomyLine(){
+    var m = state.draft && state.draft.metrics;
+    if(!m) return '<p>No Reich figures on file.</p>';
+    var worst = null, worstScore = -Infinity;
+    Object.keys(CMP_ECON).forEach(function(k){
+      var b = badness(k, metricValue(k, m));
+      if(b > worstScore){ worstScore = b; worst = k; }
+    });
+    var cfg = METRICS[worst], txt = CMP_ECON[worst], v = metricValue(worst, m), cls = classifyMetric(worst, v);
+    var word = cls === 'bad' ? 'a grave concern' : (cls === 'warn' ? 'cause for concern' : 'within bounds');
+    return '<p>Reich figures for ' + escGame(state.draft.quarter) + ' put <b>' + escGame(txt.phrase) + '</b> at ' +
+      fmtNum(v, cfg.decimals) + NBSP + escGame(txt.unit) + ' \u2014 <span class="cmp-tag">' + word + '</span>.</p>';
+  }
+
+  // One sentence on what last week's action actually did (from the result stored on the log entry).
+  function cmpEffectSentence(last){
+    var r = last && last.result;
+    if(!r) return '';
+    if(last.action === 'canvass'){
+      return r.regionName ? 'Local support in ' + r.regionName + ' rose by ' + fmtNum(r.localPts, 1) + ' points, and the party\u2019s campaign strength grew.'
+                          : 'The party\u2019s campaign strength grew.';
+    }
+    if(last.action === 'speech') return 'The speech added ' + fmtNum(r.natPts, 1) + ' points to the party\u2019s national standing; such bounces fade within weeks.';
+    if(last.action === 'press') return 'The coverage added ' + fmtNum(r.natPts, 1) + ' points of national visibility, which fades only slowly.';
+    if(last.action === 'organize') return 'Organization now stands at level ' + r.orgLevel + ': every later action is ' + Math.round((r.orgMult - 1) * 100) + '% stronger.';
+    return '';
+  }
+
+  // Projection sentence from the stored campaign projection (constituencies and seats on today's polling).
+  function cmpProjectionSentence(party){
+    var c = state.game && state.game.campaign, pr = c && (c.projection || c.baseline);
+    if(!pr || !pr.seats) return '';
+    var pk = party.key, base = c.baseline && c.baseline.seats ? c.baseline.seats[pk] : null;
+    var move = base != null ? seatsMove(pr.seats[pk] - base) : '';
+    function seatsMove(d){ return d === 0 ? ' \u2014 level with the start of the campaign' : ' (' + cmpSigned(d, 0) + ' since the campaign began)'; }
+    return 'Projection on the latest polling: ' + fmtNum(pr.national[pk], 1) + '% of the vote, ' + pr.constSeats[pk] + ' constituencies and ' +
+      pr.seats[pk] + ' of ' + pr.totalSeats + ' seats' + move + '.';
+  }
+
+  // Builds the newspaper masthead + dateline once (they're the same for the
+  // whole campaign) and patches only the week number, funds figure and the
+  // article body each week — the body is the only part meant to play the
+  // "just printed" reveal effect. Previously the whole thing, masthead
+  // included, was replaced via innerHTML every week, which is what made the
+  // header (and the "Woche N" box) look like it was reloading top-to-bottom
+  // right along with the intentional reveal on the articles below it.
+  function cmpNewsShellHtml(party){
+    return '<div class="cmp-news-inner">' +
+      '<div class="cmp-np-head">' +
+        '<div class="cmp-np-ear"><span class="cmp-vig">' + cmpVignette() + '</span><span><b>Woche <span id="cmp-np-week-num"></span></b><i>von ' + CAMPAIGN_WEEKS + '</i></span></div>' +
+        '<div class="cmp-np-title cmp-inked">Der Wahlkampf-Bote</div>' +
+        '<div class="cmp-np-ear r"><span><b id="cmp-np-quarter"></b><i id="cmp-np-election-label"></i></span></div>' +
+      '</div>' +
+      '<div class="cmp-np-dateline"><span>Erscheint w\u00f6chentlich bis zum Wahltag</span><span class="cmp-chain"></span><span>Wahlkasse: <b id="cmp-np-funds"></b></span></div>' +
+      '<div class="cmp-np-body" id="cmp-np-body"></div>' +
+    '</div>';
+  }
+
+  function cmpNewsBodyHtml(party, week){
+    var g = state.game, pledge = g.pledge, pledgeName = pledge ? pledge.name : 'its programme';
+    var acts = (g.campaign && g.campaign.actions) || [];
+    var last = acts[acts.length-1];
+    var head, deck;
+    var effect = cmpEffectSentence(last);
+    if(week >= CAMPAIGN_WEEKS){
+      head = 'Final week: ' + party.name + ' makes its closing case';
+      deck = 'Polling day follows the close of this week. ' + (effect || 'The party leadership settles the last week\u2019s work at headquarters.');
+    } else if(!last){
+      head = party.name + ' opens its campaign on \u201c' + pledgeName + '\u201d';
+      deck = CAMPAIGN_WEEKS + ' weeks remain until polling day. Headquarters is open and the first week\u2019s work awaits a decision.';
+    } else {
+      var st = CMP_STORIES[last.action] || { head:'{P} campaigns on', deck:'The party pressed on with \u201c{L}\u201d this week.' };
+      head = cmpFill(st.head, party.name, pledgeName);
+      if(last.action === 'canvass' && last.result && last.result.regionName) head = party.name + ' canvassers work ' + last.result.regionName;
+      deck = effect || cmpFill(st.deck, party.name, pledgeName);
+    }
+    var bodyText = cmpProjectionSentence(party) || (pledge && pledge.description ? 'The party campaigns on \u201c' + pledge.name + '\u201d: ' + pledge.description : '');
+
+    var polls = cmpLatestPolls(), pollHtml;
+    if(polls){
+      pollHtml = '<ul class="cmp-polls">' + polls.rows.map(function(r){
+        return '<li' + (r.key === party.key ? ' class="is-you"' : '') + ' style="--c:' + escGame(r.color) + '"><span class="cmp-abbr">' + escGame(r.abbr) +
+          '</span><span class="cmp-bar"><i style="width:' + Math.min(100, r.share/35*100).toFixed(1) + '%"></i></span><span class="cmp-pct">' + fmtNum(r.share, 1) + '%' +
+          (r.delta != null && Math.abs(r.delta) >= 0.05 ? '<small>' + cmpSigned(r.delta, 1) + '</small>' : '') + '</span></li>';
+      }).join('') + '</ul>';
+    } else {
+      pollHtml = '<p>No polls published yet.</p>';
+    }
+
+    var chron = acts.slice(-3).reverse().map(function(a){
+      var d = cmpActionDef(a.action), r = a.result || {};
+      var tip = a.action === 'canvass' && r.regionName ? 'Local support in ' + r.regionName + ' +' + fmtNum(r.localPts, 1) :
+                (a.action === 'speech' || a.action === 'press') && r.natPts != null ? 'National +' + fmtNum(r.natPts, 1) :
+                a.action === 'organize' && r.orgLevel ? 'Organization level ' + r.orgLevel : '';
+      return '<li' + (tip ? ' title="' + escGame(tip) + '"' : '') + '><b>Wo.\u00a0' + a.week + '</b><span>' + escGame(d ? d.name : a.action) + '</span></li>';
+    }).join('');
+    if(!chron) chron = '<li><span>The campaign has only just begun.</span></li>';
+
+    return '<article class="cmp-lead"><h3>' + escGame(head) + '</h3><h4>' + escGame(deck) + '</h4>' + (bodyText ? '<p>' + escGame(bodyText) + '</p>' : '') + '</article>' +
+      '<article class="cmp-col"><h5>Wirtschaft</h5>' + cmpEconomyLine() + '</article>' +
+      '<article class="cmp-col"><h5>Chronik</h5><ul class="cmp-chron">' + chron + '</ul></article>' +
+      '<article class="cmp-col"><h5>Umfragen' + (polls ? '<small>' + escGame(polls.quarter) + '</small>' : '') + '</h5>' + pollHtml + '</article>';
+  }
+
+  function cmpFillNews(party, week, animate){
+    var el = document.getElementById('cmp-news');
+    if(!el) return;
+    if(el.getAttribute('data-cmp-news') !== '1'){
+      el.innerHTML = cmpNewsShellHtml(party);
+      el.setAttribute('data-cmp-news', '1');
+    }
+    var wkEl = document.getElementById('cmp-np-week-num'); if(wkEl) wkEl.textContent = week;
+    var qEl = document.getElementById('cmp-np-quarter'); if(qEl) qEl.textContent = state.draft.quarter;
+    var lblEl = document.getElementById('cmp-np-election-label'); if(lblEl) lblEl.textContent = cmpElectionLabel();
+    var fundsEl = document.getElementById('cmp-np-funds'); if(fundsEl) fundsEl.textContent = fmtNum(state.game.campaignFunds, 0) + ' RM';
+    var bodyEl = document.getElementById('cmp-np-body');
+    if(bodyEl){
+      bodyEl.innerHTML = cmpNewsBodyHtml(party, week);
+      if(animate){
+        // Restart the reveal on just this week's articles.
+        bodyEl.classList.remove('cmp-print');
+        void bodyEl.offsetWidth;
+        bodyEl.classList.add('cmp-print');
+      } else {
+        bodyEl.classList.remove('cmp-print');
+      }
+    }
+  }
+
+  /* ---- shell + panel adoption ---- */
+  function cmpEnsureShell(){
+    var el = document.getElementById('campaign-screen-overlay');
+    if(el && el.getAttribute('data-cmp') === '1') return el;
+    if(!el){
+      el = document.createElement('div');
+      el.id = 'campaign-screen-overlay';
+      document.body.appendChild(el);
+    }
+    el.setAttribute('data-cmp', '1');
+    el.className = 'cmp-root';
+    el.removeAttribute('style');
+    el.setAttribute('role', 'region');
+    el.setAttribute('aria-label', 'Election campaign headquarters');
+    el.innerHTML =
+      // letterpress ink spread: slightly roughens the edges of the big display type
+      '<svg width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true" focusable="false"><filter id="cmp-ink" x="-2%" y="-4%" width="104%" height="108%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="1" seed="7" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="1.7" xChannelSelector="R" yChannelSelector="G"/></filter></svg>' +
+      '<header id="cmp-head" class="cmp-head"></header>' +
+      '<div class="cmp-main">' +
+        '<section id="cmp-map-slot" class="cmp-sheet cmp-map-slot"><div class="cmp-rubric"><span>Die Wahlkarte</span></div></section>' +
+        '<div class="cmp-side">' +
+          '<section id="cmp-poll-slot" class="cmp-sheet cmp-poll-slot"><div class="cmp-rubric"><span>Die Umfragen</span><button type="button" class="cmp-zoom-btn" data-cmp-zoom aria-expanded="false">Enlarge</button></div></section>' +
+          '<section id="cmp-you" class="cmp-sheet cmp-you"></section>' +
+        '</div>' +
+      '</div>' +
+      '<section id="cmp-actions" class="cmp-actions" aria-label="Campaign actions"></section>' +
+      '<section id="cmp-news" class="cmp-sheet cmp-news" aria-label="Campaign news"></section>' +
+      '<footer id="cmp-foot" class="cmp-foot"></footer>';
+    el.addEventListener('click', cmpOnClick);
+    document.documentElement.classList.add('cmp-lock');
+    cmpAdopt();
+    return el;
+  }
+
+  function cmpAdopt(){
+    if(CMP.home) return;
+    CMP.home = [];
+    [['#page-5 .map-panel', 'cmp-map-slot', 'The election map is not part of this document.'],
+     ['#page-5 .polling-graph-panel', 'cmp-poll-slot', 'The polling graph is not part of this document.']].forEach(function(t){
+      var node = document.querySelector(t[0]), slot = document.getElementById(t[1]);
+      if(!slot) return;
+      if(node){
+        CMP.home.push({ node:node, parent:node.parentNode, next:node.nextSibling });
+        slot.appendChild(node);
+      } else {
+        var msg = document.createElement('div');
+        msg.className = 'cmp-empty';
+        msg.textContent = t[2];
+        slot.appendChild(msg);
+      }
+    });
+    // The polling graph (and anything else that sizes itself from its
+    // container, e.g. via a ResizeObserver/window "resize" listener) was
+    // built at its original, much smaller size on page 3. It only ever
+    // looked right in here because the old per-week full-page rebuild
+    // happened to trigger a reflow big enough for it to notice its new,
+    // much larger container and redraw at the right size. Now that the
+    // campaign screen doesn't tear the page down every week, ask for that
+    // resize explicitly instead of relying on the accidental side effect.
+    cmpNudgeResize();
+  }
+
+  function cmpNudgeResize(){
+    if(typeof window.requestAnimationFrame === 'function'){
+      window.requestAnimationFrame(function(){
+        try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+      });
+    } else {
+      try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+    }
+  }
+
+  function cmpRelease(){
+    var zoomed = document.getElementById('cmp-poll-slot');
+    if(zoomed) zoomed.classList.remove('cmp-zoom');
+    if(CMP.home){
+      CMP.home.slice().reverse().forEach(function(h){
+        var parent = h.parent && h.parent.isConnected ? h.parent : document.querySelector('#page-5 main');
+        if(!parent) return;
+        parent.insertBefore(h.node, (h.next && h.next.parentNode === parent) ? h.next : null);
+      });
+      CMP.home = null;
+    }
+    document.documentElement.classList.remove('cmp-lock');
+  }
+
+  /* ---- dynamic regions ---- */
+  // Builds the cmp-head shell (party seal/name + masthead + week counter) only
+  // once per party, then just patches the text that actually changes each
+  // week (the "weeks to polling day" subtitle and the week number). Used to
+  // rebuild this whole header from scratch every End Week via innerHTML,
+  // which is what made it visibly redraw top-to-bottom alongside the actual
+  // "stamped" week-number animation, even though only the week number was
+  // meant to animate.
+  function cmpHeadShellHtml(party){
+    return '<div class="cmp-party"><span class="cmp-seal" aria-hidden="true">' + escGame(party.abbr) + '</span><span class="cmp-party-name">' + escGame(party.name) + '</span></div>' +
+      '<h1 class="cmp-title"><span class="cmp-title-main cmp-inked">' + escGame(cmpElectionLabel()) + '</span>' +
+        '<span class="cmp-title-sub" id="cmp-title-sub"></span></h1>' +
+      '<div class="cmp-week" aria-live="polite"><span class="cmp-week-word">Week</span><b class="cmp-week-num cmp-inked" id="cmp-week-num"></b><span class="cmp-week-of">of ' + CAMPAIGN_WEEKS + '</span></div>';
+  }
+
+  function cmpFillHead(party, week){
+    var el = document.getElementById('cmp-head');
+    if(!el) return;
+    if(el.getAttribute('data-cmp-party') !== party.key){
+      el.innerHTML = cmpHeadShellHtml(party);
+      el.setAttribute('data-cmp-party', party.key);
+    }
+    var left = CAMPAIGN_WEEKS - week;
+    var subEl = document.getElementById('cmp-title-sub');
+    if(subEl) subEl.textContent = left > 0 ? left + (left === 1 ? ' week' : ' weeks') + ' to polling day' : 'The last week before polling day';
+    var wkEl = document.getElementById('cmp-week-num');
+    if(wkEl){
+      wkEl.textContent = cmpPad2(week);
+      if(CMP.renderedWeek !== week){
+        // Restart the "stamped" reveal on just the digits, not the header around them.
+        wkEl.classList.remove('cmp-print');
+        void wkEl.offsetWidth; // force reflow so re-adding the class restarts the animation
+        wkEl.classList.add('cmp-print');
+      }
+    }
+  }
+
+  function cmpFillYou(party, week){
+    var g = state.game, pl = g.pledge;
+    var acts = (g.campaign && g.campaign.actions) || [];
+    var polls = cmpLatestPolls(), poll = '';
+    if(polls){
+      var rank = 0;
+      polls.rows.forEach(function(r, i){ if(r.key === party.key) rank = i; });
+      var mine = polls.rows[rank];
+      poll = '<p class="cmp-poll-line">Latest poll (' + escGame(polls.quarter) + '): <b>' + fmtNum(mine.share, 1) + '%</b>' +
+        (mine.delta != null && Math.abs(mine.delta) >= 0.05 ? ' (' + cmpSigned(mine.delta, 1) + ')' : '') + ', ranked ' + (rank+1) + ' of ' + polls.rows.length + '.</p>';
+    }
+    var fxc = g.campaign && g.campaign.fx;
+    if(fxc) poll += '<p class="cmp-poll-line cmp-fx-line">Campaign strength <b>' + fmtNum(fxc.strength, 1) + '</b> \u00b7 Organization <b>\u00d7' + fmtNum(campaignMultiplier(fxc), 2) + '</b></p>';
+    var cells = '';
+    for(var w = 1; w <= CAMPAIGN_WEEKS; w++){
+      var done = acts.filter(function(a){ return a.week === w; })[0];
+      var cls = 'cmp-cal-cell' + (done ? ' is-done' : (w === week ? ' is-now' : ''));
+      cells += '<span class="' + cls + '" title="Week ' + w + (done && cmpActionDef(done.action) ? ': ' + escGame(cmpActionDef(done.action).name) : '') + '">' +
+        (done ? cmpIcon(done.action) : w) + '</span>';
+    }
+    document.getElementById('cmp-you').innerHTML =
+      '<div class="cmp-rubric cmp-you-head"><span><span class="cmp-rubric-title">Your campaign</span></span>' + (pl ? '<span class="cmp-stamp">' + escGame(pl.status || 'active') + '</span>' : '') + '</div>' +
+      '<div class="cmp-you-pledge">' + (pl ? '<h3 class="cmp-pledge-name">' + escGame(pl.name) + '</h3><p class="cmp-pledge-desc">' + escGame(pl.description) + '</p>'
+        : '<p class="cmp-pledge-desc">No pledge chosen.</p>') + '</div>' +
+      '<div class="cmp-you-stats">' + (pl ? '<div class="cmp-meter-row"><span>Pledge standing</span><span class="cmp-meter" role="img" aria-label="Pledge standing ' + fmtNum(pl.popularity, 0) + ' out of 100"><i style="width:' + Math.max(0, Math.min(100, pl.popularity)) + '%"></i></span><span class="cmp-meter-val">' + fmtNum(pl.popularity, 0) + '</span></div>' : '') + poll + '</div>' +
+      '<div class="cmp-cal" role="img" aria-label="Campaign calendar, week ' + week + ' of ' + CAMPAIGN_WEEKS + '">' + cells + '</div>';
+  }
+
+  function cmpFillActions(week){
+    var sel = CMP.selectedWeek === week ? CMP.selected : null;
+    document.getElementById('cmp-actions').innerHTML = CAMPAIGN_ACTIONS.map(function(a){
+      return '<button type="button" class="cmp-act cmp-act--' + escGame(a.key) + '" data-cmp-action="' + escGame(a.key) + '" title="' + escGame(a.description) + '" aria-pressed="' + (sel === a.key ? 'true' : 'false') + '">' +
+        '<span class="cmp-act-medal">' + cmpIcon(a.key) + '</span>' +
+        '<span><span class="cmp-act-slogan">' + escGame(CMP_SLOGAN[a.key] || '') + '</span><span class="cmp-act-name">' + escGame(a.name) + '</span><span class="cmp-act-desc">' + escGame(a.description) + '</span></span></button>';
+    }).join('');
+  }
+
+  function cmpFillFoot(week){
+    var sel = CMP.selectedWeek === week ? CMP.selected : null, def = sel && cmpActionDef(sel);
+    var last = week >= CAMPAIGN_WEEKS;
+    document.getElementById('cmp-foot').innerHTML =
+      '<div class="cmp-funds"><span class="cmp-funds-label">Campaign funds</span><span class="cmp-funds-num">' + fmtNum(state.game.campaignFunds, 0) + '<span class="cmp-rm">RM</span></span></div>' +
+      '<div class="cmp-foot-note">' + (def ? 'Week ' + week + ' action: <b>' + escGame(def.name) + '</b>' : 'Choose one action for week ' + week + ' to end the week.') + '</div>' +
+      '<button type="button" class="cmp-end" id="cmp-end-week"' + (def ? '' : ' disabled') + '>End Week ' + week + (last ? ' \u2192 Polling Day' : ' \u2192') + '</button>';
+  }
+
+  function renderCampaignScreen(){
+    var el = document.getElementById('campaign-screen-overlay');
+    var show = state.game && state.game.phase === 'campaign';
+    if(!show){
+      if(el){
+        cmpRelease();
+        el.parentNode.removeChild(el);
+      }
+      CMP.selected = null; CMP.selectedWeek = 0; CMP.renderedWeek = 0; CMP.committing = false;
+      return;
+    }
+    cmpEnsureStyles();
+    el = cmpEnsureShell();
+    var week = state.game.campaignWeek || 1;
+    var def = cmpPartyDef(state.game.playerParty);
+    var color = cmpPartyColor(def);
+    var party = { key:def.key, name:def.name, abbr:CMP_ABBR[def.key] || def.key.toUpperCase(), color:color };
+    if(CMP.selectedWeek !== week){ CMP.selected = null; CMP.selectedWeek = week; }
+    el.style.setProperty('--party', color);
+    el.style.setProperty('--party-ink', cmpInkFor(color));
+    el.style.setProperty('--party-deep', cmpDeepen(color, 0.4));
+    el.style.setProperty('--party-lit', cmpLift(color, 0.42));
+    var weekChanged = CMP.renderedWeek !== week;
+    cmpFillHead(party, week);
+    cmpFillYou(party, week);
+    cmpFillActions(week);
+    cmpFillNews(party, week, weekChanged);
+    cmpFillFoot(week);
+    CMP.renderedWeek = week;
+  }
+
+  /* ---- interaction (one delegated listener on the overlay) ---- */
+  function cmpOnClick(e){
+    var t = e.target && e.target.closest ? e.target.closest('[data-cmp-action],[data-cmp-zoom],#cmp-end-week') : null;
+    if(!t || !state.game || state.game.phase !== 'campaign') return;
+    var week = state.game.campaignWeek || 1;
+    if(t.hasAttribute('data-cmp-zoom')){
+      var slot = document.getElementById('cmp-poll-slot');
+      var on = slot.classList.toggle('cmp-zoom');
+      t.setAttribute('aria-expanded', on ? 'true' : 'false');
+      t.textContent = on ? 'Close' : 'Enlarge';
+      return;
+    }
+    if(t.hasAttribute('data-cmp-action')){
+      var key = t.getAttribute('data-cmp-action');
+      if(!cmpActionDef(key)) return;
+      CMP.selected = key; CMP.selectedWeek = week;
+      cmpFillActions(week);
+      cmpFillFoot(week);
+      return;
+    }
+    if(t.id === 'cmp-end-week') cmpEndWeek(week);
+  }
+
+  // Stage-then-commit: End Week hands the staged action to the existing onCampaignAction(),
+  // which logs it and advances the week (or ends the campaign after week 12) exactly as before.
+  function cmpEndWeek(week){
+    if(CMP.committing || !CMP.selected || CMP.selectedWeek !== week) return;
+    var key = CMP.selected;
+    CMP.committing = true;
+    var btn = document.getElementById('cmp-end-week');
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function commit(){
+      CMP.committing = false;
+      CMP.selected = null;
+      onCampaignAction(key);
+    }
+    if(btn && !reduce){ btn.classList.add('cmp-stamping'); setTimeout(commit, 220); }
+    else commit();
+  }
+
+  document.addEventListener('keydown', function(e){
+    if(e.key !== 'Escape') return;
+    var slot = document.getElementById('cmp-poll-slot');
+    if(slot && slot.classList.contains('cmp-zoom')){
+      slot.classList.remove('cmp-zoom');
+      var b = slot.querySelector('[data-cmp-zoom]');
+      if(b){ b.setAttribute('aria-expanded', 'false'); b.textContent = 'Enlarge'; }
+    }
+  });
+
+  /* ===== Campaign effects (Phase 2, Step 6) =====
+     The four campaign actions now change the game. Design goals: simple, deterministic (no
+     randomness), all tuning in CAMPAIGN_TUNING, and built ON TOP of the existing systems:
+
+       - Effects accumulate in state.game.campaign.fx (plain numbers, persisted with the rest of state).
+       - The player's party gets NATIONAL campaign points on top of the swing the economic engine already
+         computes for the draft quarter (partySwingPoints), pushed through the same simulator
+         (pruState.swings -> calc() -> electionSummary()) that produces the map, the election chart
+         and the historical polling series. Other parties lose vote share only through the
+         simulator's own normalisation.
+       - Local (constituency-level) effects use the optional pruState.localSwings hook in sim-script.js.
+         Nothing in pruState.base (the historical results), GRAPH_BASELINE or the filed quarters changes:
+         the overlay exists only while phase==='campaign' and is switched off (localSwings = null,
+         swings back to the draft's own) as soon as the phase moves on.
+       - Polling: after every End Week the simulator's national result under the new effects is stored as
+         that week's tracker poll (state.game.campaign.polls); syncPollingGraph() appends those to the
+         existing polling series as extra rows, with the same deterministic noise recipe as the quarterly polls.
+       - Projection: the same swings drive the map (winners/support per constituency) and the
+         seat projection stored in state.game.campaign.projection.
+
+     Actions (each stacks over the 12 weeks; every action's strength is scaled by the organisation multiplier
+     earned from earlier Organize weeks):
+       Canvass  -> campaign strength +1 (small permanent national lift) and a local boost, in vote-share points,
+                   across the constituencies of the region where the party has the most seats within reach.
+                   Local effects persist (tiny fade) and show diminishing returns in a region already worked.
+       Speech   -> enthusiasm: a large national polling boost that fades fast.
+       Press    -> visibility: a smaller national boost that fades slowly.
+       Organize -> organisation +1: every future action is stronger (+10% per level, capped), plus a little
+                   campaign strength right away. No direct polling effect of its own beyond that.
+     Order each week: fade short-term effects -> apply the chosen action -> recompute polling and
+     projection -> (render) redraw graph, map and news. Funds, pledge, the 12-week flow and the election
+     transition are untouched. */
+  var CAMPAIGN_TUNING = {
+    orgBonusPerLevel: 0.10,   // each Organize week strengthens every later action by 10% ...
+    orgBonusCap: 0.60,        // ... up to +60%
+    organizeStrength: 0.4,    // campaign strength gained immediately by Organize
+    canvassStrength: 1.0,     // campaign strength gained by Canvass
+    strengthNational: 0.15,   // permanent national points per unit of campaign strength
+    canvassLocalPoints: 7.0,  // local vote-share points (pre-normalisation) added across the worked region per Canvass
+    canvassLocalKeep: 0.985,  // share of local support kept from one week to the next
+    canvassDiminish: 0.06,    // returns fall by this factor per point already banked in the same region
+    speechPoints: 1.5,        // national points from a speech ...
+    speechDecay: 0.55,        // ... of which this fraction is still there a week later (short-lived)
+    pressPoints: 0.7,         // national points from press work ...
+    pressDecay: 0.85,         // ... fading slowly
+    nationalCap: 8,           // soft ceiling (tanh) on total national campaign points
+    pollNoise: 0.3,           // tracker-poll noise relative to the quarterly polls
+    pollStep: 0.2             // x-axis spacing (in quarters) between weekly tracker polls on the polling graph
+  };
+
+  // Campaign regions: each constituency belongs to the nearest of these anchors (lon/lat of its centroid).
+  var CAMPAIGN_REGIONS = [
+    { key:'rhineland',   name:'the Rhineland',                 lon:6.9,  lat:50.8 },
+    { key:'westphalia',  name:'Westphalia',                    lon:8.0,  lat:51.8 },
+    { key:'hesse',       name:'Hesse-Nassau',                  lon:9.0,  lat:50.5 },
+    { key:'hanover',     name:'Hanover and the coast',         lon:9.6,  lat:52.9 },
+    { key:'holstein',    name:'Schleswig-Holstein',            lon:9.8,  lat:54.2 },
+    { key:'saxony',      name:'the Province of Saxony',        lon:11.6, lat:51.7 },
+    { key:'brandenburg', name:'Berlin and Brandenburg',        lon:13.4, lat:52.5 },
+    { key:'pomerania',   name:'Pomerania',                     lon:15.8, lat:53.8 },
+    { key:'silesia',     name:'Silesia',                       lon:16.8, lat:51.0 },
+    { key:'posen',       name:'Posen and West Prussia',        lon:18.0, lat:52.9 },
+    { key:'eastprussia', name:'East Prussia',                  lon:21.0, lat:54.0 }
+  ];
+  var CMP_REGION_CACHE = null;
+
+  function campaignRegions(){
+    if(typeof DATA === 'undefined' || !DATA || !DATA.features || !DATA.features.length) return null;
+    if(CMP_REGION_CACHE && CMP_REGION_CACHE.n === DATA.features.length) return CMP_REGION_CACHE;
+    var regionOf = [], members = {};
+    CAMPAIGN_REGIONS.forEach(function(r){ members[r.key] = []; });
+    DATA.features.forEach(function(f, i){
+      var sx = 0, sy = 0, n = 0;
+      function ring(r){ r.forEach(function(p){ sx += p[0]; sy += p[1]; n++; }); }
+      var g = f.geometry;
+      if(g && g.type === 'Polygon') g.coordinates.forEach(ring);
+      else if(g && g.type === 'MultiPolygon') g.coordinates.forEach(function(poly){ poly.forEach(ring); });
+      var lon = n ? sx/n : 0, lat = n ? sy/n : 0, best = null, bd = Infinity;
+      CAMPAIGN_REGIONS.forEach(function(r){
+        var dx = (lon - r.lon) * Math.cos(lat * Math.PI/180), dy = lat - r.lat, d = dx*dx + dy*dy;
+        if(d < bd){ bd = d; best = r.key; }
+      });
+      regionOf.push(best);
+      members[best].push(i);
+    });
+    CMP_REGION_CACHE = { n:DATA.features.length, regionOf:regionOf, members:members };
+    return CMP_REGION_CACHE;
+  }
+  function campaignRegionName(key){
+    var r = CAMPAIGN_REGIONS.filter(function(x){ return x.key === key; })[0];
+    return r ? r.name : key;
+  }
+
+  function campaignSimReady(){
+    return typeof window.pruProjectionForSwings === 'function' && window.pruState && window.pruState.parties &&
+           window.pruState.parties.length === Object.keys(PRU_UI_PARTY_ORDER).length;
+  }
+  function campaignPlayerIndex(){
+    var pk = state.game && state.game.playerParty, found = -1;
+    Object.keys(PRU_UI_PARTY_ORDER).forEach(function(i){ if(PRU_UI_PARTY_ORDER[i] === pk) found = +i; });
+    return found;
+  }
+
+  function campaignFxDefault(){
+    return { strength:0, enthusiasm:0, visibility:0, organization:0, local:{} };
+  }
+  function campaignMultiplier(fx){
+    var T = CAMPAIGN_TUNING;
+    return 1 + Math.min(T.orgBonusCap, fx.organization * T.orgBonusPerLevel);
+  }
+  // National campaign points for the player's party (soft-capped so stacking can never run away).
+  function campaignNationalPoints(fx){
+    var T = CAMPAIGN_TUNING, raw = fx.enthusiasm + fx.visibility + T.strengthNational * fx.strength;
+    return T.nationalCap * Math.tanh(raw / T.nationalCap);
+  }
+
+  // Creates the effect containers on state.game.campaign the first time they are needed, and files the
+  // starting (no-effects) projection as the campaign baseline.
+  function campaignEnsure(){
+    var c = state.game && state.game.campaign;
+    if(!c) return null;
+    if(!c.fx) c.fx = campaignFxDefault();
+    if(!c.polls) c.polls = [];
+    if(!c.baseline && campaignSimReady()){
+      try{ c.baseline = campaignSummary(campaignProject(campaignFxDefault())); }catch(e){}
+    }
+    return c;
+  }
+
+  // The economic engine's own swing for the draft quarter, in simulator party order — identical to what
+  // syncPrussiaMap() has always applied to the map.
+  function campaignDraftSwings(){
+    var priorMetrics = state.history[state.history.length-1].metrics;
+    var sw = partySwingPoints(state.draft.metrics, priorMetrics, state.draft.government,
+                              getAccountabilityBaselines(state.history, null, state.draft.metrics, state.draft.government));
+    return Object.keys(PRU_UI_PARTY_ORDER).map(function(i){ return sw[PRU_UI_PARTY_ORDER[i]].points; });
+  }
+
+  // { national: [swing points per simulator party], local: [per-constituency [points per party]] | null }
+  function campaignSwingArrays(fx){
+    var nat = campaignDraftSwings(), pi = campaignPlayerIndex(), reg = campaignRegions(), local = null;
+    if(pi >= 0){
+      nat[pi] += campaignNationalPoints(fx);
+      if(reg){
+        Object.keys(fx.local || {}).forEach(function(rk){
+          var pts = fx.local[rk];
+          if(!(pts > 0.0001) || !reg.members[rk]) return;
+          if(!local) local = [];
+          reg.members[rk].forEach(function(i){
+            local[i] = [0,0,0,0,0];
+            local[i][pi] = pts;
+          });
+        });
+      }
+    }
+    return { national:nat, local:local };
+  }
+
+  function campaignProject(fx){
+    var arrs = campaignSwingArrays(fx), out = { arrs:arrs };
+    if(campaignSimReady()){
+      var p = window.pruProjectionForSwings(arrs.national, arrs.local);
+      out.national = p.national; out.constSeats = p.constSeats; out.total = p.total; out.totalSeats = p.totalSeats; out.results = p.results;
+    }
+    return out;
+  }
+  function campaignByKey(arr){
+    var o = {};
+    Object.keys(PRU_UI_PARTY_ORDER).forEach(function(i){ o[PRU_UI_PARTY_ORDER[i]] = Number(arr[i]); });
+    return o;
+  }
+  // Compact, persistable summary of a projection.
+  function campaignSummary(p){
+    if(!p.national) return null;
+    return { national:campaignByKey(p.national), constSeats:campaignByKey(p.constSeats), seats:campaignByKey(p.total), totalSeats:p.totalSeats };
+  }
+
+  // Canvass target: the region with the most constituencies within reach of the player's party (trailing the
+  // leader by up to 12 points, or leading by under 6), so door-knocking goes where it can change results.
+  function campaignPickRegion(fx){
+    var reg = campaignRegions(), pi = campaignPlayerIndex();
+    if(!reg || pi < 0 || !campaignSimReady()) return null;
+    var proj = campaignProject(fx), best = null, bestScore = -1, fallback = null, fallbackMean = -1;
+    CAMPAIGN_REGIONS.forEach(function(r){
+      var mem = reg.members[r.key];
+      if(!mem || !mem.length) return;
+      var score = 0, mean = 0;
+      mem.forEach(function(i){
+        var sh = proj.results[i].shares, w = proj.results[i].winner, mine = sh[pi];
+        mean += mine;
+        if(w === pi){
+          var second = 0;
+          sh.forEach(function(v, j){ if(j !== pi && v > second) second = v; });
+          var lead = mine - second;
+          if(lead < 6) score += 0.5 * (6 - lead) / 6;
+        } else {
+          var gap = sh[w] - mine;
+          if(gap <= 12) score += (12 - gap) / 12;
+        }
+      });
+      mean /= mem.length;
+      if(score > bestScore){ bestScore = score; best = r.key; }
+      if(mean > fallbackMean){ fallbackMean = mean; fallback = r.key; }
+    });
+    return bestScore > 0 ? best : fallback;
+  }
+
+  // Applies one week's chosen action. Returns the result record stored on the action-log entry.
+  function campaignApplyAction(key, week){
+    var c = campaignEnsure();
+    if(!c) return null;
+    var T = CAMPAIGN_TUNING, fx = c.fx;
+    var beforeSummary = c.polls.length ? { national:c.polls[c.polls.length-1].shares } : c.baseline;
+    var beforeProjection = c.projection || (c.baseline ? c.baseline : null);
+
+    // 1. fade what is short-lived, relax the ground game slightly
+    fx.enthusiasm *= T.speechDecay;
+    fx.visibility *= T.pressDecay;
+    Object.keys(fx.local).forEach(function(rk){ fx.local[rk] *= T.canvassLocalKeep; });
+
+    // 2. apply the action, scaled by the organisation earned so far
+    var mult = campaignMultiplier(fx), result = { action:key, mult:+mult.toFixed(3) };
+    if(key === 'canvass'){
+      var rk = campaignPickRegion(fx);
+      fx.strength += T.canvassStrength;
+      if(rk){
+        var banked = fx.local[rk] || 0, pts = T.canvassLocalPoints * mult / (1 + T.canvassDiminish * banked);
+        fx.local[rk] = banked + pts;
+        result.region = rk; result.regionName = campaignRegionName(rk); result.localPts = +pts.toFixed(2);
+      }
+    } else if(key === 'speech'){
+      var s = T.speechPoints * mult;
+      fx.enthusiasm += s; result.natPts = +s.toFixed(2);
+    } else if(key === 'press'){
+      var pp = T.pressPoints * mult;
+      fx.visibility += pp; result.natPts = +pp.toFixed(2);
+    } else if(key === 'organize'){
+      fx.organization += 1;
+      fx.strength += T.organizeStrength;
+      result.orgLevel = fx.organization;
+      result.orgMult = +campaignMultiplier(fx).toFixed(3);
+    }
+
+    // 3. recompute polling and the projection under the new effects
+    var proj = campaignProject(fx), summary = campaignSummary(proj);
+    var pk = state.game.playerParty;
+    if(summary){
+      c.polls.push({ week:week, shares:summary.national });
+      c.projection = { week:week, national:summary.national, constSeats:summary.constSeats, seats:summary.seats, totalSeats:summary.totalSeats };
+      if(beforeSummary && beforeSummary.national){
+        result.shareBefore = +beforeSummary.national[pk].toFixed(2);
+        result.shareAfter = +summary.national[pk].toFixed(2);
+        result.delta = +(summary.national[pk] - beforeSummary.national[pk]).toFixed(2);
+      }
+      if(beforeProjection && beforeProjection.seats){
+        result.seatsBefore = beforeProjection.seats[pk]; result.seatsAfter = summary.seats[pk];
+        result.constBefore = beforeProjection.constSeats[pk]; result.constAfter = summary.constSeats[pk];
+      }
+    }
+    return result;
+  }
+
+  // Weekly tracker polls as extra rows for the existing polling graph (campaign phase only). Same deterministic
+  // noise recipe as the quarterly polls; week 0 is the campaign-start poll at the draft quarter.
+  function campaignPollRows(){
+    if(!state.game || state.game.phase !== 'campaign') return [];
+    var c = campaignEnsure();
+    if(!c || !c.baseline) return [];
+    var T = CAMPAIGN_TUNING, N = state.history.length, rows = [];
+    var series = [{ week:0, shares:c.baseline.national }].concat(c.polls);
+    var lastWeek = series[series.length-1].week;
+    series.forEach(function(p){
+      var t = N + p.week * T.pollStep;
+      var show = p.week === 0 || p.week % 4 === 0 || p.week === lastWeek;
+      var row = {
+        t: t,
+        quarter: show ? (p.week === 0 ? state.draft.quarter : 'Wk ' + p.week) : '',   // x-axis label (blank on most weeks to avoid crowding)
+        pollLabel: p.week === 0 ? state.draft.quarter : 'week ' + p.week,               // used by the campaign screen
+        quarterIndex: t,
+        pollIndex: 0,
+        campaignWeek: p.week
+      };
+      PARTIES.forEach(function(pt, pi){
+        var seed = (N + 1 + p.week * 0.37) * 17.31 + 11.73 + (pi + 1) * 7.19;
+        var noise = Math.sin(seed) * 0.72 + Math.cos(seed * 1.73) * 0.34 + Math.sin(seed * 0.37 + pi) * 0.22;
+        var base = Number(p.shares[pt.key]);
+        row[pt.name] = Number(Math.max(0, base + noise * T.pollNoise).toFixed(3));
+      });
+      rows.push(row);
+    });
+    return rows;
+  }
+
+  // Puts the campaign's effects on the simulator for the map (and switches them off outside the campaign).
+  function campaignApplyToMap(){
+    if(!window.pruState) return;
+    var c = state.game && state.game.phase === 'campaign' ? campaignEnsure() : null;
+    if(!c || campaignPlayerIndex() < 0){ window.pruState.localSwings = null; return; }
+    var arrs = campaignSwingArrays(c.fx);
+    Object.keys(PRU_UI_PARTY_ORDER).forEach(function(idx){ window.pruState.swings[idx] = arrs.national[idx]; });
+    window.pruState.localSwings = arrs.local;
+  }
+
+
+  function onCampaignAction(key){
+    if(!state.game || state.game.phase !== 'campaign') return;
+    var def = CAMPAIGN_ACTIONS.filter(function(a){ return a.key === key; })[0];
+    if(!def) return;
+    if(!state.game.campaign) state.game.campaign = { actions: [] };
+    var entry = { week: state.game.campaignWeek, action: def.key };
+    state.game.campaign.actions.push(entry);
+    // Phase 2 Step 6: the chosen action now has effects (see the campaign effects block above).
+    try{ entry.result = campaignApplyAction(def.key, state.game.campaignWeek); }
+    catch(e){ if(window.console && console.warn) console.warn('Campaign effects failed:', e); }
+    var leavingCampaign = state.game.campaignWeek >= CAMPAIGN_WEEKS;
+    if(leavingCampaign){
+      // Week 12's action just got logged above — now hand off to the election phase.
+      var idx = GAME_PHASES.indexOf('campaign');
+      state.game.phase = GAME_PHASES[idx+1] || 'election';
+      state.game.campaignWeek = 0; // mirrors defaultGameState()'s "0 when not in a campaign phase"
+    } else {
+      state.game.campaignWeek += 1;
+    }
+    state.updatedAt = Date.now();
+    // Staying on the campaign screen for another week: update the map, the
+    // polling graph, the week/calendar, the news and the funds/pledge
+    // panels in place (see renderCampaignWeekUpdate()) rather than running
+    // the full render() — which rebuilds the Control Center behind the
+    // overlay and used to make the whole campaign screen visibly flash/
+    // rebuild on every End Week. Once the campaign itself ends, fall back
+    // to the full render() so the next phase's screen gets built properly.
+    if(leavingCampaign) render();
+    else renderCampaignWeekUpdate();
+    schedulePersist();
+  }
+
+  // Lightweight per-week refresh used while staying inside the campaign
+  // screen (see onCampaignAction() above). Deliberately does NOT touch
+  // #app (the Control Center) or renderPage1() — both are hidden behind
+  // the campaign overlay and rebuilding them is both unnecessary and the
+  // main source of the old "whole screen reloads" bug.
+  function renderCampaignWeekUpdate(){
+    syncPrussiaMap();     // repaints the existing map/legend/seat-graph nodes in place
+    syncPollingGraph();   // appends this week's tracker poll to the existing polling graph
+    renderCampaignScreen(); // updates head/you/actions/news/foot in place; the shell itself is untouched
+    // Nudged last, after cmp-news/cmp-you have been refilled: with the news column's height now pinned
+    // (see .cmp-lead p / .cmp-chron above) this should mostly be a no-op, but it still ought to measure the
+    // week's *final* layout rather than the previous week's, in case anything else ever changes cmp-main's size.
+    cmpNudgeResize();
   }
 
   var PRU_UI_PARTY_ORDER = { 0:'spd', 1:'dnvp', 2:'zentrum', 3:'nlp', 4:'fdp' };
@@ -1144,7 +2741,20 @@
         }
       });
 
-      window.updatePollingData(data);
+      data = data.concat(campaignPollRows());   // Phase 2 Step 6: weekly campaign tracker polls (empty outside the campaign)
+      var pollOpts;
+      if(state.game && state.game.phase === 'campaign'){
+        // Reserve the x-axis space for the *whole* 12-week campaign from week 1 onward, instead of
+        // letting updatePollingData() size the axis to only the polls filed so far. Each weekly
+        // tracker poll's quarterIndex (state.history.length + week*pollStep) is a fraction of a
+        // quarter, so with only a handful of quarters on record that one more week could widen the
+        // chart's domain by a visible amount — and since updatePollingData() clears and redraws the
+        // entire plot every time, the whole trend (not just the new point) snapped to the new,
+        // wider scale each week. Pre-committing to the campaign's final width keeps the scale fixed
+        // for its full 12 weeks, so nothing already on the chart moves as new weeks are added.
+        pollOpts = { maxT: state.history.length + CAMPAIGN_WEEKS * CAMPAIGN_TUNING.pollStep + 0.22 };
+      }
+      window.updatePollingData(data, pollOpts);
       window.pollingGraphData = data;
     }catch(e){
       if(window.console && console.warn) console.warn('Polling graph sync failed:', e);
@@ -1163,6 +2773,7 @@
           window.pruState.swings[idx] = swings[key].points;
         }
       });
+      campaignApplyToMap();   // Phase 2 Step 6: campaign effects on top of the draft swings (campaign phase only)
       if(typeof window.pruRenderPartyControls === 'function') window.pruRenderPartyControls();
       if(typeof window.pruRender === 'function') window.pruRender();
     }catch(e){ /* map not ready yet or failed to load; report/tracker still work */ }
@@ -1186,6 +2797,7 @@
       '<button type="button" class="danger" id="btn-reset">Reset to Report Baseline</button>' +
       '<button type="button" id="btn-export-json">Export as JSON</button>' +
       '<button type="button" id="btn-export-csv">Export Ledger as CSV</button>' +
+      (s.game && s.game.phase === 'governing' ? '<button type="button" id="btn-begin-campaign">Begin Campaign &rarr;</button>' : '') +
       '<label class="cc-toggle"><input type="checkbox" id="chk-links"' + (s.linkMetrics !== false ? ' checked' : '') + '> Linked metrics</label>' +
       '</div>';
     html += renderQuarterEvents(s);
@@ -1440,6 +3052,8 @@
     if(btnJson) btnJson.addEventListener('click', exportJson);
     var btnCsv = document.getElementById('btn-export-csv');
     if(btnCsv) btnCsv.addEventListener('click', exportCsv);
+    var btnBeginCampaign = document.getElementById('btn-begin-campaign');
+    if(btnBeginCampaign) btnBeginCampaign.addEventListener('click', beginCampaign);
     var chkLinks = document.getElementById('chk-links');
     if(chkLinks) chkLinks.addEventListener('change', onLinkToggle);
   }
